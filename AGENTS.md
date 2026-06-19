@@ -34,7 +34,7 @@ npm run preview
 - 沿用现有 React/Vite/TypeScript/lucide-react，不引入新状态管理库或 UI 框架，除非需求明确。
 - 保持本项目是调试工具，不把它扩展成正式管理后台；管理后台能力应优先放在 sibling `tunnel-hub-website`。
 - 不要提交本地生成物：`node_modules/`、`dist/`、`*.tsbuildinfo`、`.env*`、`.DS_Store`、日志文件。
-- 不要在文档、源码或配置中写入真实 Desktop token、Admin API Key、cookie secret 或其他凭据。
+- 不要在文档、源码或配置中写入真实 Desktop token、Official JWT、cookie secret 或其他凭据。
 - WebSocket frame、request type、payload 模板要以当前 Desktop 协议和 sibling server 代码为准；无法确认时在文档或注释中标记未知，不要编造协议细节。
 - 涉及公网 route、Admin API 或 token 传递模式的改动，需要同时检查 UI 展示、日志脱敏和错误提示是否仍然清晰。
 - `vite.config.ts` 中的 probe 逻辑运行在 Node 侧，改动时注意不要把浏览器 API 写进去。
