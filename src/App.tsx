@@ -96,6 +96,19 @@ type ServicePublishResponse = {
   };
 };
 
+type DesktopRegisterResponse = {
+  deviceId: string;
+  publicHost: string;
+  publicUrl: string;
+  webSocketUrl: string;
+  relayUrl: string;
+  targetUrl: string;
+  tokenId: string;
+  agentToken?: string;
+  created: boolean;
+  rotated: boolean;
+};
+
 type DesktopActionDefinition = {
   name: string;
   kind: string;
@@ -614,7 +627,7 @@ function sanitizeLogValue(value: unknown, secrets: string[], key = ''): unknown 
 export function App() {
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [desktopToken, setDesktopToken] = useState('');
-  const [adminApiKey, setAdminApiKey] = useState('');
+  const [hubJwt, setHubJwt] = useState('');
   const [agents, setAgents] = useState<AgentRecord[]>([]);
   const [selectedTokenId, setSelectedTokenId] = useState('');
   const [bridgeStatus, setBridgeStatus] = useState<'unknown' | 'open' | 'error'>('unknown');
@@ -700,7 +713,7 @@ export function App() {
   const bridgeAction = bridgeActions.find((action) => action.name === bridgeActionName) ?? null;
 
   const addLog = useCallback((entry: Omit<LogEntry, 'id' | 'at'>) => {
-    const secrets = [desktopToken, adminApiKey];
+    const secrets = [desktopToken, hubJwt];
     setLogs((current) => [
       {
         ...entry,
@@ -712,7 +725,7 @@ export function App() {
       },
       ...current
     ].slice(0, 240));
-  }, [adminApiKey, desktopToken]);
+  }, [hubJwt, desktopToken]);
 
   const patchSettings = useCallback((patch: Partial<Settings>) => {
     setSettings((current) => {
@@ -1005,7 +1018,7 @@ export function App() {
     setBusy('agents');
     try {
       const payload = await httpRequest(`${hubOrigin}/api/admin/agents`, {
-        headers: adminApiKey.trim() ? { Authorization: `Bearer ${adminApiKey.trim()}` } : undefined
+        headers: hubJwt.trim() ? { Authorization: `Bearer ${hubJwt.trim()}` } : undefined
       });
       const nextAgents = Array.isArray(payload) ? (payload as AgentRecord[]) : [];
       setAgents(nextAgents);
@@ -1021,7 +1034,7 @@ export function App() {
     } finally {
       setBusy('');
     }
-  }, [addLog, adminApiKey, httpRequest, hubOrigin, settings.serviceName]);
+  }, [addLog, hubJwt, httpRequest, hubOrigin, settings.serviceName]);
 
   const publishService = useCallback(async () => {
     if (!selectedTokenId) {
@@ -1033,11 +1046,11 @@ export function App() {
       const payload = await httpRequest(`${hubOrigin}/api/admin/services/${settings.serviceName.trim()}`, {
         method: 'PUT',
         headers: {
-          Authorization: `Bearer ${adminApiKey.trim()}`,
+          Authorization: `Bearer ${hubJwt.trim()}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-              targetUrl: settings.targetUrl.trim(),
+          targetUrl: settings.targetUrl.trim(),
           tokenId: selectedTokenId,
           active: true
         })
@@ -1055,7 +1068,47 @@ export function App() {
     } finally {
       setBusy('');
     }
-  }, [addLog, adminApiKey, httpRequest, hubOrigin, patchSettings, selectedTokenId, settings.serviceName, settings.targetUrl]);
+  }, [addLog, hubJwt, httpRequest, hubOrigin, patchSettings, selectedTokenId, settings.serviceName, settings.targetUrl]);
+
+  const registerDesktopDevice = useCallback(async (rotateToken = false) => {
+    if (!hubJwt.trim()) {
+      addLog({ direction: 'system', title: 'Desktop registration skipped', status: 'Official JWT is required' });
+      return;
+    }
+    setBusy(rotateToken ? 'desktop-register-rotate' : 'desktop-register');
+    try {
+      const payload = await httpRequest(`${hubOrigin}/api/desktop/devices/register`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${hubJwt.trim()}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          deviceId: remoteDeviceId,
+          targetUrl: settings.targetUrl.trim(),
+          rotateToken
+        })
+      });
+      const response = payload as DesktopRegisterResponse;
+      if (response.publicHost) {
+        patchSettings({
+          desktopPublicHost: response.publicHost,
+          remoteDeviceId: normalizeDeviceId(response.publicHost),
+          targetMode: 'remote'
+        });
+      }
+      addLog({
+        direction: 'system',
+        title: response.rotated ? 'Desktop registration rotated' : 'Desktop registered',
+        status: response.publicHost || response.deviceId,
+        payload: response
+      });
+    } catch (error) {
+      addLog({ direction: 'system', title: 'Desktop registration failed', status: asErrorMessage(error) });
+    } finally {
+      setBusy('');
+    }
+  }, [addLog, hubJwt, httpRequest, hubOrigin, patchSettings, remoteDeviceId, settings.targetUrl]);
 
   const checkBridgeHealth = useCallback(async () => {
     setBusy('bridge-health');
@@ -1133,7 +1186,7 @@ export function App() {
       await httpRequest(`${hubOrigin}/api/admin/services/${settings.serviceName.trim()}`, {
         method: 'DELETE',
         headers: {
-          Authorization: `Bearer ${adminApiKey.trim()}`
+          Authorization: `Bearer ${hubJwt.trim()}`
         }
       });
     } catch (error) {
@@ -1141,7 +1194,7 @@ export function App() {
     } finally {
       setBusy('');
     }
-  }, [addLog, adminApiKey, httpRequest, hubOrigin, settings.serviceName]);
+  }, [addLog, hubJwt, httpRequest, hubOrigin, settings.serviceName]);
 
   const sendHttpProbe = useCallback(async () => {
     setBusy('http');
@@ -1163,14 +1216,14 @@ export function App() {
     setBusy('metrics');
     try {
       await httpRequest(`${hubOrigin}/api/admin/metrics`, {
-        headers: adminApiKey.trim() ? { Authorization: `Bearer ${adminApiKey.trim()}` } : undefined
+        headers: hubJwt.trim() ? { Authorization: `Bearer ${hubJwt.trim()}` } : undefined
       });
     } catch (error) {
       addLog({ direction: 'system', title: 'Metrics probe failed', status: asErrorMessage(error) });
     } finally {
       setBusy('');
     }
-  }, [addLog, adminApiKey, httpRequest, hubOrigin]);
+  }, [addLog, hubJwt, httpRequest, hubOrigin]);
 
   const formatPayload = useCallback(() => {
     try {
@@ -1423,7 +1476,7 @@ export function App() {
               <button
                 className="icon-button"
                 type="button"
-                onClick={() => copyText(prettyJSON(sanitizeLogValue(logs, [desktopToken, adminApiKey])), 'logs')}
+                onClick={() => copyText(prettyJSON(sanitizeLogValue(logs, [desktopToken, hubJwt])), 'logs')}
                 aria-label="复制日志"
               >
                 <Copy size={16} />
@@ -1501,7 +1554,7 @@ export function App() {
             <div className="panel-heading">
               <div>
                 <h2>Tunnel Hub Admin</h2>
-                <span>发布或删除远程 route 时使用</span>
+                <span>使用官网 JWT 注册 Desktop 或管理远程 route</span>
               </div>
               <ShieldCheck size={18} />
             </div>
@@ -1511,8 +1564,8 @@ export function App() {
                 <input value={settings.hubBaseUrl} onChange={updateInput('hubBaseUrl')} />
               </label>
               <label className="span-2">
-                Admin API Key
-                <input value={adminApiKey} onChange={(event) => setAdminApiKey(event.target.value)} placeholder="zth_..." />
+                Official JWT
+                <input value={hubJwt} onChange={(event) => setHubJwt(event.target.value)} placeholder="eyJ..." />
               </label>
               <label>
                 Service name
@@ -1557,6 +1610,14 @@ export function App() {
               <button className="secondary" type="button" onClick={() => void probeHubMetrics()} disabled={busy === 'metrics'}>
                 <Activity size={16} />
                 Metrics
+              </button>
+              <button className="primary" type="button" onClick={() => void registerDesktopDevice(false)} disabled={busy === 'desktop-register'}>
+                <CheckCircle2 size={16} />
+                Register Desktop
+              </button>
+              <button className="secondary" type="button" onClick={() => void registerDesktopDevice(true)} disabled={busy === 'desktop-register-rotate'}>
+                <RefreshCcw size={16} />
+                Rotate Register
               </button>
               <button className="primary" type="button" onClick={() => void publishService()} disabled={busy === 'publish'}>
                 <Link2 size={16} />

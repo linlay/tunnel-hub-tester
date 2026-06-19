@@ -67,7 +67,7 @@ npm run preview
 npm run build
 ```
 
-构建产物位于 `dist/`，可由任意静态文件服务器托管。部署时不要把 Desktop token、Admin API Key 或其他真实凭据写入仓库文件、构建脚本或静态产物。
+构建产物位于 `dist/`，可由任意静态文件服务器托管。部署时不要把 Desktop token、Official JWT 或其他真实凭据写入仓库文件、构建脚本或静态产物。
 
 ## 5. 运维
 
