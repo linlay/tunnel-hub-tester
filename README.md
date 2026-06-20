@@ -33,7 +33,7 @@ npm run dev
 ### 常用流程
 
 1. 选择 `本地调试` 或 `远程调试`。
-2. 本地调试保留默认端口 `7082`；远程调试填写 `deviceId` 或 public host。
+2. 本地调试保留默认端口 `7082`；远程调试填写裸域名，例如 `zma7bxd2v33a.m.zenmind.cc`，页面会自动补全 `wss://` 和 `/ws`。
 3. 粘贴 Desktop app access token。
 4. 需要排查握手、鉴权或公网路由时，先点击 `探测`，再点击 `连接`。
 5. 在 `请求调试` 中选择模板、编辑 JSON payload 并发送请求。
@@ -80,7 +80,7 @@ npm run build
 ### 常见问题
 
 - 无法连接本地 Desktop：确认 `127.0.0.1:7082` 的 Desktop WebSocket 服务已经启动。
-- 远程 route 返回 `404`：确认 public host 已绑定在线 token，且 Tunnel Hub route 指向正确目标。
+- 远程 route 返回 `404`：确认远程 URL 对应的 public host 已绑定在线 token，且 Tunnel Hub route 指向正确目标。
 - 鉴权失败：确认 Desktop app access token 有效，并检查 token 传递模式是 query token 还是 `bearer.<token>` WebSocket subprotocol。
 - Desktop Bridge 调用失败：确认 `http://127.0.0.1:11788` 可访问，且目标 Desktop 进程启用了该 localhost-only bridge。
 

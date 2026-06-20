@@ -34,6 +34,7 @@ type Settings = {
   remoteDeviceId: string;
   hubBaseUrl: string;
   desktopPublicHost: string;
+  remoteWebSocketUrl: string;
   desktopBridgeUrl: string;
   serviceName: string;
   targetUrl: string;
@@ -149,6 +150,7 @@ const defaultHubBaseUrl = import.meta.env.VITE_TUNNEL_HUB_BASE_URL || 'https://t
 const defaultPublicBaseDomain = 'tunnel-hub.zenmind.cc';
 const defaultDesktopHost =
   import.meta.env.VITE_DESKTOP_PUBLIC_HOST || 'mac-mini-office.tunnel-hub.zenmind.cc';
+const defaultRemoteWebSocketUrl = defaultDesktopHost;
 const defaultRemoteDeviceId = deviceIdFromPublicHost(defaultDesktopHost) || 'mac-mini-office';
 
 const defaultSettings: Settings = {
@@ -157,6 +159,7 @@ const defaultSettings: Settings = {
   remoteDeviceId: defaultRemoteDeviceId,
   hubBaseUrl: defaultHubBaseUrl,
   desktopPublicHost: defaultDesktopHost,
+  remoteWebSocketUrl: defaultRemoteWebSocketUrl,
   desktopBridgeUrl: 'http://127.0.0.1:11788',
   serviceName: 'mac-mini-office',
   targetUrl: 'http://127.0.0.1:7082',
@@ -457,6 +460,72 @@ function normalizeWsPath(value: unknown) {
   return path.startsWith('/') ? path : `/${path}`;
 }
 
+function webSocketUrlFromPublicHost(publicHost: unknown, path: unknown = '/ws') {
+  const host = typeof publicHost === 'string' && publicHost.trim()
+    ? publicHost
+      .trim()
+      .replace(/^https?:\/\//u, '')
+      .replace(/^wss?:\/\//u, '')
+      .split('/')[0]
+    : defaultDesktopHost;
+  return `wss://${host}${normalizeWsPath(path)}`;
+}
+
+function parseWebSocketUrlInput(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
+  }
+  const trimmed = value.trim();
+  const withProtocol = /^[a-z][a-z\d+.-]*:\/\//iu.test(trimmed) ? trimmed : `wss://${trimmed}`;
+  try {
+    const url = new URL(withProtocol);
+    if (url.protocol === 'http:') {
+      url.protocol = 'ws:';
+    } else if (url.protocol === 'https:') {
+      url.protocol = 'wss:';
+    }
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+      return null;
+    }
+    if (!url.pathname || url.pathname === '/') {
+      url.pathname = '/ws';
+    }
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRemoteWebSocketUrl(value: unknown, fallback = webSocketUrlFromPublicHost(defaultDesktopHost)) {
+  return parseWebSocketUrlInput(value)?.toString() || fallback;
+}
+
+function normalizeRemoteUrlInput(value: unknown, fallback = defaultDesktopHost) {
+  const url = parseWebSocketUrlInput(value);
+  if (!url) {
+    return fallback;
+  }
+  const path = url.pathname && url.pathname !== '/ws' ? url.pathname : '';
+  return `${url.host}${path}${url.search}${url.hash}`;
+}
+
+function publicHostFromWebSocketUrl(value: unknown) {
+  const url = parseWebSocketUrlInput(value);
+  return url ? url.host : '';
+}
+
+function httpOriginFromWebSocketUrl(value: unknown, fallback: string) {
+  const url = parseWebSocketUrlInput(value);
+  if (!url) {
+    return fallback;
+  }
+  url.protocol = url.protocol === 'ws:' ? 'http:' : 'https:';
+  url.pathname = '';
+  url.search = '';
+  url.hash = '';
+  return url.toString().replace(/\/+$/u, '');
+}
+
 function loadSettings(): Settings {
   try {
     const raw = window.localStorage.getItem(storageKey);
@@ -466,20 +535,26 @@ function loadSettings(): Settings {
     const stored = JSON.parse(raw) as Partial<Settings>;
     const localPort = normalizePort(stored.localPort, localPortFromTargetUrl(stored.targetUrl) || defaultSettings.localPort);
     const remoteDeviceId = normalizeDeviceId(stored.remoteDeviceId || deviceIdFromPublicHost(stored.desktopPublicHost));
+    const desktopPublicHost = stored.desktopPublicHost || `${remoteDeviceId}.${defaultPublicBaseDomain}`;
     const targetMode: TargetMode =
       stored.targetMode === 'remote' || stored.targetMode === 'local'
         ? stored.targetMode
         : localPortFromTargetUrl(stored.targetUrl)
           ? 'local'
           : 'remote';
+    const remoteWebSocketUrl = normalizeRemoteUrlInput(
+      stored.remoteWebSocketUrl || webSocketUrlFromPublicHost(desktopPublicHost, stored.wsPath),
+      normalizeRemoteUrlInput(webSocketUrlFromPublicHost(desktopPublicHost, stored.wsPath))
+    );
     return {
       ...defaultSettings,
       ...stored,
       targetMode,
       localPort,
       remoteDeviceId,
+      remoteWebSocketUrl,
       wsPath: normalizeWsPath(stored.wsPath),
-      desktopPublicHost: stored.desktopPublicHost || `${remoteDeviceId}.${defaultPublicBaseDomain}`,
+      desktopPublicHost,
       targetUrl: stored.targetUrl || `http://127.0.0.1:${localPort}`
     };
   } catch {
@@ -679,20 +754,28 @@ export function App() {
   const localPort = useMemo(() => normalizePort(settings.localPort), [settings.localPort]);
   const remoteDeviceId = useMemo(() => normalizeDeviceId(settings.remoteDeviceId), [settings.remoteDeviceId]);
   const remotePublicHost = useMemo(() => `${remoteDeviceId}.${defaultPublicBaseDomain}`, [remoteDeviceId]);
+  const remoteDesktopOrigin = useMemo(
+    () => httpOriginFromWebSocketUrl(settings.remoteWebSocketUrl, `https://${remotePublicHost}`),
+    [remotePublicHost, settings.remoteWebSocketUrl]
+  );
   const desktopOrigin = useMemo(
     () =>
       settings.targetMode === 'local'
         ? `http://127.0.0.1:${localPort}`
-        : `https://${remotePublicHost}`,
-    [localPort, remotePublicHost, settings.targetMode]
+        : remoteDesktopOrigin,
+    [localPort, remoteDesktopOrigin, settings.targetMode]
   );
   const bridgeOrigin = useMemo(
     () => normalizeOrigin(settings.desktopBridgeUrl, 'http://127.0.0.1:11788'),
     [settings.desktopBridgeUrl]
   );
   const desktopWsUrl = useMemo(() => {
-    const url = new URL(normalizeWsPath(settings.wsPath), desktopOrigin);
-    url.protocol = settings.targetMode === 'local' ? 'ws:' : 'wss:';
+    const url = settings.targetMode === 'local'
+      ? new URL(normalizeWsPath(settings.wsPath), desktopOrigin)
+      : new URL(normalizeRemoteWebSocketUrl(settings.remoteWebSocketUrl, webSocketUrlFromPublicHost(remotePublicHost, settings.wsPath)));
+    if (settings.targetMode === 'local') {
+      url.protocol = 'ws:';
+    }
     if (settings.source.trim()) {
       url.searchParams.set('source', settings.source.trim());
     }
@@ -703,7 +786,7 @@ export function App() {
       url.searchParams.set('token', desktopToken.trim());
     }
     return url.toString();
-  }, [desktopOrigin, desktopToken, settings.clientDeviceId, settings.source, settings.targetMode, settings.tokenMode, settings.wsPath]);
+  }, [desktopOrigin, desktopToken, remotePublicHost, settings.clientDeviceId, settings.remoteWebSocketUrl, settings.source, settings.targetMode, settings.tokenMode, settings.wsPath]);
 
   const availableTypes = composer.ns === 'd'
     ? (remoteDesktopTypes.length > 0 ? remoteDesktopTypes : [...desktopImplementedRequestTypes, ...desktopReservedRequestTypes])
@@ -1060,6 +1143,7 @@ export function App() {
         patchSettings({
           desktopPublicHost: response.publicHost,
           remoteDeviceId: normalizeDeviceId(response.publicHost),
+          remoteWebSocketUrl: normalizeRemoteUrlInput(webSocketUrlFromPublicHost(response.publicHost, settings.wsPath)),
           targetMode: 'remote'
         });
       }
@@ -1068,7 +1152,7 @@ export function App() {
     } finally {
       setBusy('');
     }
-  }, [addLog, hubJwt, httpRequest, hubOrigin, patchSettings, selectedTokenId, settings.serviceName, settings.targetUrl]);
+  }, [addLog, hubJwt, httpRequest, hubOrigin, patchSettings, selectedTokenId, settings.serviceName, settings.targetUrl, settings.wsPath]);
 
   const registerDesktopDevice = useCallback(async (rotateToken = false) => {
     if (!hubJwt.trim()) {
@@ -1094,6 +1178,7 @@ export function App() {
         patchSettings({
           desktopPublicHost: response.publicHost,
           remoteDeviceId: normalizeDeviceId(response.publicHost),
+          remoteWebSocketUrl: normalizeRemoteUrlInput(response.webSocketUrl || response.publicHost),
           targetMode: 'remote'
         });
       }
@@ -1252,6 +1337,21 @@ export function App() {
     };
   }
 
+  function updateRemoteWebSocketUrl(event: ChangeEvent<HTMLInputElement>) {
+    const value = event.target.value;
+    const publicHost = publicHostFromWebSocketUrl(value);
+    const remoteWebSocketUrl = publicHost ? normalizeRemoteUrlInput(value) : value;
+    patchSettings({
+      remoteWebSocketUrl,
+      ...(publicHost
+        ? {
+          desktopPublicHost: publicHost,
+          remoteDeviceId: normalizeDeviceId(publicHost)
+        }
+        : {})
+    });
+  }
+
   function statusIcon() {
     if (wsStatus === 'open') {
       return <CheckCircle2 size={16} />;
@@ -1316,11 +1416,11 @@ export function App() {
             </label>
           ) : (
             <label>
-              Device ID
+              URL
               <input
-                value={settings.remoteDeviceId}
-                onChange={updateInput('remoteDeviceId')}
-                placeholder={defaultRemoteDeviceId}
+                value={settings.remoteWebSocketUrl}
+                onChange={updateRemoteWebSocketUrl}
+                placeholder="zma7bxd2v33a.m.zenmind.cc"
               />
             </label>
           )}
