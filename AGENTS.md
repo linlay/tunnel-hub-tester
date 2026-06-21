@@ -45,6 +45,7 @@ npm run preview
 
 - 前端 UI、类型、Vite 中间件：`npm run build`
 - 本地交互联调：`npm run dev`，打开 `http://127.0.0.1:11975`
-- WebSocket route 排查相关改动：分别验证本地 `ws://127.0.0.1:7082/ws` 和远程 `wss://{deviceId}.tunnel-hub.zenmind.cc/ws`
+- Desktop WebSocket 排查相关改动：分别验证本地 `ws://127.0.0.1:7082/ws` 和远程 `wss://<random>.m.zenmind.cc/ws`
+- WebApp route 排查相关改动：验证公网 `https://<random>.wa.zenmind.cc/` 或 `wss://<random>.wa.zenmind.cc/ws` 能通过 Desktop tunnel 转发到注册的本机 `targetUrl`
 
 如果因为环境限制无法运行某项验证，请在最终说明里明确写出未运行的命令和原因。

@@ -37,6 +37,8 @@ type Settings = {
   remoteWebSocketUrl: string;
   desktopBridgeUrl: string;
   serviceName: string;
+  webAppName: string;
+  webAppPublicUrl: string;
   targetUrl: string;
   wsPath: string;
   source: string;
@@ -110,6 +112,16 @@ type DesktopRegisterResponse = {
   rotated: boolean;
 };
 
+type DesktopWebAppRegisterResponse = {
+  deviceId: string;
+  name: string;
+  publicHost: string;
+  publicUrl: string;
+  targetUrl: string;
+  routeId: string;
+  active: boolean;
+};
+
 type DesktopActionDefinition = {
   name: string;
   kind: string;
@@ -162,7 +174,9 @@ const defaultSettings: Settings = {
   remoteWebSocketUrl: defaultRemoteWebSocketUrl,
   desktopBridgeUrl: 'http://127.0.0.1:11788',
   serviceName: 'mac-mini-office',
-  targetUrl: 'http://127.0.0.1:7082',
+  webAppName: 'notes',
+  webAppPublicUrl: '',
+  targetUrl: 'http://127.0.0.1:7080',
   wsPath: '/ws',
   source: '',
   clientDeviceId: '',
@@ -526,6 +540,58 @@ function httpOriginFromWebSocketUrl(value: unknown, fallback: string) {
   return url.toString().replace(/\/+$/u, '');
 }
 
+function parseHttpUrlInput(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
+  }
+  const trimmed = value.trim();
+  const withProtocol = /^[a-z][a-z\d+.-]*:\/\//iu.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const url = new URL(withProtocol);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null;
+    }
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function normalizePublicHttpUrlInput(value: unknown, fallback = '') {
+  const url = parseHttpUrlInput(value);
+  if (!url) {
+    return fallback;
+  }
+  const path = url.pathname && url.pathname !== '/' ? url.pathname : '';
+  return `${url.host}${path}${url.search}${url.hash}`;
+}
+
+function httpOriginFromPublicUrl(value: unknown) {
+  const url = parseHttpUrlInput(value);
+  if (!url) {
+    return '';
+  }
+  url.pathname = '';
+  url.search = '';
+  url.hash = '';
+  return url.toString().replace(/\/+$/u, '');
+}
+
+function webSocketUrlFromPublicUrl(value: unknown, path: unknown) {
+  const url = parseHttpUrlInput(value);
+  if (!url) {
+    return '';
+  }
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  const normalizedPath = typeof path === 'string' && path.trim()
+    ? path.trim()
+    : '/';
+  url.pathname = normalizedPath.startsWith('/') ? normalizedPath : `/${normalizedPath}`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
 function loadSettings(): Settings {
   try {
     const raw = window.localStorage.getItem(storageKey);
@@ -555,6 +621,8 @@ function loadSettings(): Settings {
       remoteWebSocketUrl,
       wsPath: normalizeWsPath(stored.wsPath),
       desktopPublicHost,
+      webAppName: typeof stored.webAppName === 'string' && stored.webAppName.trim() ? stored.webAppName.trim() : defaultSettings.webAppName,
+      webAppPublicUrl: normalizePublicHttpUrlInput(stored.webAppPublicUrl, stored.webAppPublicUrl || ''),
       targetUrl: stored.targetUrl || `http://127.0.0.1:${localPort}`
     };
   } catch {
@@ -725,6 +793,8 @@ export function App() {
   const [httpPath, setHttpPath] = useState('/ws');
   const [httpMethod, setHttpMethod] = useState('GET');
   const [httpBody, setHttpBody] = useState('');
+  const [webAppWsPath, setWebAppWsPath] = useState('/ws');
+  const [webAppWsPayload, setWebAppWsPayload] = useState('ping');
   const [composer, setComposer] = useState<Composer>({
     ns: 'd',
     type: 'session.hello',
@@ -768,6 +838,14 @@ export function App() {
   const bridgeOrigin = useMemo(
     () => normalizeOrigin(settings.desktopBridgeUrl, 'http://127.0.0.1:11788'),
     [settings.desktopBridgeUrl]
+  );
+  const webAppHttpOrigin = useMemo(
+    () => httpOriginFromPublicUrl(settings.webAppPublicUrl),
+    [settings.webAppPublicUrl]
+  );
+  const webAppWsUrl = useMemo(
+    () => webSocketUrlFromPublicUrl(settings.webAppPublicUrl, webAppWsPath),
+    [settings.webAppPublicUrl, webAppWsPath]
   );
   const desktopWsUrl = useMemo(() => {
     const url = settings.targetMode === 'local'
@@ -1169,7 +1247,6 @@ export function App() {
         },
         body: JSON.stringify({
           deviceId: remoteDeviceId,
-          targetUrl: settings.targetUrl.trim(),
           rotateToken
         })
       });
@@ -1193,7 +1270,49 @@ export function App() {
     } finally {
       setBusy('');
     }
-  }, [addLog, hubJwt, httpRequest, hubOrigin, patchSettings, remoteDeviceId, settings.targetUrl]);
+  }, [addLog, hubJwt, httpRequest, hubOrigin, patchSettings, remoteDeviceId]);
+
+  const registerDesktopWebApp = useCallback(async () => {
+    if (!hubJwt.trim()) {
+      addLog({ direction: 'system', title: 'WebApp registration skipped', status: 'Official JWT is required' });
+      return;
+    }
+    const name = settings.webAppName.trim();
+    if (!name) {
+      addLog({ direction: 'system', title: 'WebApp registration skipped', status: 'WebApp name is required' });
+      return;
+    }
+    setBusy('webapp-register');
+    try {
+      const payload = await httpRequest(`${hubOrigin}/api/desktop/devices/${encodeURIComponent(remoteDeviceId)}/webapps/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${hubJwt.trim()}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          targetUrl: settings.targetUrl.trim(),
+          active: true
+        })
+      });
+      const response = payload as DesktopWebAppRegisterResponse;
+      if (response.publicHost) {
+        patchSettings({
+          webAppPublicUrl: normalizePublicHttpUrlInput(response.publicUrl || response.publicHost, response.publicHost)
+        });
+      }
+      addLog({
+        direction: 'system',
+        title: 'WebApp registered',
+        status: response.publicHost || response.name,
+        payload: response
+      });
+    } catch (error) {
+      addLog({ direction: 'system', title: 'WebApp registration failed', status: asErrorMessage(error) });
+    } finally {
+      setBusy('');
+    }
+  }, [addLog, hubJwt, httpRequest, hubOrigin, patchSettings, remoteDeviceId, settings.targetUrl, settings.webAppName]);
 
   const checkBridgeHealth = useCallback(async () => {
     setBusy('bridge-health');
@@ -1284,7 +1403,10 @@ export function App() {
   const sendHttpProbe = useCallback(async () => {
     setBusy('http');
     try {
-      const url = new URL(httpPath || '/', desktopOrigin);
+      if (!webAppHttpOrigin) {
+        throw new Error('WebApp URL is required');
+      }
+      const url = new URL(httpPath || '/', `${webAppHttpOrigin}/`);
       await httpRequest(url.toString(), {
         method: httpMethod,
         headers: httpBody.trim() ? { 'Content-Type': 'application/json' } : undefined,
@@ -1295,7 +1417,70 @@ export function App() {
     } finally {
       setBusy('');
     }
-  }, [addLog, desktopOrigin, httpBody, httpMethod, httpPath, httpRequest]);
+  }, [addLog, httpBody, httpMethod, httpPath, httpRequest, webAppHttpOrigin]);
+
+  const runWebAppWebSocketProbe = useCallback(() => {
+    setBusy('webapp-ws');
+    return new Promise<void>((resolve) => {
+      try {
+        if (!webAppWsUrl) {
+          throw new Error('WebApp URL is required');
+        }
+        const socket = new WebSocket(webAppWsUrl);
+        let settled = false;
+        const timeout = window.setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          socket.close(1002, 'probe timeout');
+          addLog({ direction: 'system', title: 'WebApp WS timeout', status: webAppWsUrl });
+          setBusy('');
+          resolve();
+        }, 10000);
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          setBusy('');
+          resolve();
+        };
+        socket.onopen = () => {
+          addLog({ direction: 'system', title: 'WebApp WS open', status: webAppWsUrl });
+          if (webAppWsPayload.trim()) {
+            socket.send(webAppWsPayload);
+            addLog({ direction: 'out', title: 'WebApp WS send', status: webAppWsUrl, raw: webAppWsPayload });
+          }
+        };
+        socket.onmessage = (event) => {
+          const read = typeof event.data === 'string'
+            ? Promise.resolve(event.data)
+            : new Response(event.data).text();
+          void read.then((raw) => {
+            let payload: unknown = raw;
+            try {
+              payload = JSON.parse(raw);
+            } catch {
+              // Keep raw text for non-JSON webapp frames.
+            }
+            addLog({ direction: 'in', title: 'WebApp WS message', status: webAppWsUrl, payload, raw });
+            socket.close(1000, 'probe complete');
+            finish();
+          });
+        };
+        socket.onerror = () => {
+          addLog({ direction: 'system', title: 'WebApp WS error', status: webAppWsUrl });
+          finish();
+        };
+        socket.onclose = (event) => {
+          addLog({ direction: 'system', title: 'WebApp WS closed', status: `${event.code}${event.reason ? ` ${event.reason}` : ''}` });
+          finish();
+        };
+      } catch (error) {
+        addLog({ direction: 'system', title: 'WebApp WS failed', status: asErrorMessage(error) });
+        setBusy('');
+        resolve();
+      }
+    });
+  }, [addLog, webAppWsPayload, webAppWsUrl]);
 
   const probeHubMetrics = useCallback(async () => {
     setBusy('metrics');
@@ -1349,6 +1534,13 @@ export function App() {
           remoteDeviceId: normalizeDeviceId(publicHost)
         }
         : {})
+    });
+  }
+
+  function updateWebAppPublicUrl(event: ChangeEvent<HTMLInputElement>) {
+    const value = event.target.value;
+    patchSettings({
+      webAppPublicUrl: normalizePublicHttpUrlInput(value, value)
     });
   }
 
@@ -1654,7 +1846,7 @@ export function App() {
             <div className="panel-heading">
               <div>
                 <h2>Tunnel Hub Admin</h2>
-                <span>使用官网 JWT 注册 Desktop 或管理远程 route</span>
+                <span>使用官网 JWT 注册 Desktop、WebApp 或 legacy route</span>
               </div>
               <ShieldCheck size={18} />
             </div>
@@ -1668,12 +1860,20 @@ export function App() {
                 <input value={hubJwt} onChange={(event) => setHubJwt(event.target.value)} placeholder="eyJ..." />
               </label>
               <label>
-                Service name
+                Legacy service
                 <input value={settings.serviceName} onChange={updateInput('serviceName')} />
+              </label>
+              <label>
+                WebApp name
+                <input value={settings.webAppName} onChange={updateInput('webAppName')} />
               </label>
               <label>
                 Target URL
                 <input value={settings.targetUrl} onChange={updateInput('targetUrl')} />
+              </label>
+              <label>
+                WebApp URL
+                <input value={settings.webAppPublicUrl} onChange={updateWebAppPublicUrl} placeholder="zwaexample.wa.zenmind.cc" />
               </label>
               <label className="span-2">
                 Agent token
@@ -1719,9 +1919,13 @@ export function App() {
                 <RefreshCcw size={16} />
                 Rotate Register
               </button>
+              <button className="primary" type="button" onClick={() => void registerDesktopWebApp()} disabled={busy === 'webapp-register'}>
+                <Globe2 size={16} />
+                Register WebApp
+              </button>
               <button className="primary" type="button" onClick={() => void publishService()} disabled={busy === 'publish'}>
                 <Link2 size={16} />
-                Publish
+                Publish Legacy
               </button>
               <button className="danger" type="button" onClick={() => void deleteService()} disabled={busy === 'delete-service'}>
                 <Trash2 size={16} />
@@ -1853,8 +2057,8 @@ export function App() {
           <section className="panel http-panel">
             <div className="panel-heading">
               <div>
-                <h2>HTTP 探测</h2>
-                <span>只在排查非 WebSocket route 时使用</span>
+                <h2>WebApp 探测</h2>
+                <span>访问 browser-facing 的 *.wa HTTP 或 WebSocket 入口</span>
               </div>
               <button
                 className={`toggle ${settings.useHttpProxy ? 'on' : ''}`}
@@ -1864,6 +2068,10 @@ export function App() {
                 {settings.useHttpProxy ? 'Proxy' : 'Direct'}
               </button>
             </div>
+            <label>
+              WebApp URL
+              <input value={settings.webAppPublicUrl} onChange={updateWebAppPublicUrl} placeholder="zwaexample.wa.zenmind.cc" />
+            </label>
             <div className="field-grid http-grid">
               <label>
                 Method
@@ -1888,18 +2096,45 @@ export function App() {
                 <Globe2 size={16} />
                 Send HTTP
               </button>
-              <button className="secondary" type="button" onClick={() => setHttpPath('/ws')}>
+              <button className="secondary" type="button" onClick={() => setHttpPath('/')}>
                 <Server size={16} />
-                Probe WS Path
+                Root
               </button>
               <button className="secondary" type="button" onClick={() => setHttpPath('/api/agents')}>
                 <Activity size={16} />
-                Probe AP HTTP
+                API Path
+              </button>
+            </div>
+            <div className="field-grid http-grid">
+              <label>
+                WS Path
+                <input value={webAppWsPath} onChange={(event) => setWebAppWsPath(event.target.value)} />
+              </label>
+              <label>
+                WS Payload
+                <input value={webAppWsPayload} onChange={(event) => setWebAppWsPayload(event.target.value)} />
+              </label>
+            </div>
+            <div className="url-box target-url">
+              <span>WebApp WS</span>
+              <code>{webAppWsUrl || 'Configure WebApp URL'}</code>
+              <button className="icon-button" type="button" onClick={() => copyText(webAppWsUrl, 'WebApp WS URL')} aria-label="复制 WebApp WebSocket URL" disabled={!webAppWsUrl}>
+                <Copy size={16} />
+              </button>
+            </div>
+            <div className="button-row wrap">
+              <button className="secondary" type="button" onClick={() => void runWebAppWebSocketProbe()} disabled={busy === 'webapp-ws'}>
+                <Wifi size={16} />
+                Send WS
+              </button>
+              <button className="secondary" type="button" onClick={() => setWebAppWsPath('/ws')}>
+                <Server size={16} />
+                WS Path
               </button>
             </div>
             <div className="note">
               <AlertTriangle size={15} />
-              <span>普通 HTTP 请求可能返回 404；Desktop 默认调试入口是 WebSocket。</span>
+              <span>WebApp 不使用 Desktop Token；这里不会发送 ns=wa 业务帧。</span>
             </div>
           </section>
         </div>
