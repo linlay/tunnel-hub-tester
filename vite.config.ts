@@ -5,6 +5,11 @@ import { connect as connectNet, type Socket } from 'node:net';
 import { connect as connectTls, type TLSSocket } from 'node:tls';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
+import {
+  buildDesktopTokenTransport,
+  normalizeDesktopWsUrlInput,
+  type DesktopTokenMode
+} from './src/desktopWsProtocol';
 
 const hopByHopHeaders = new Set([
   'connection',
@@ -26,7 +31,7 @@ type ProbeSocket = Socket | TLSSocket;
 type WsProbeRequest = {
   url?: string;
   token?: string;
-  tokenMode?: 'query' | 'subprotocol' | 'none';
+  tokenMode?: DesktopTokenMode | 'none';
   frame?: unknown;
   timeoutMs?: number;
 };
@@ -44,12 +49,14 @@ type WsProbeResult = {
   opened: boolean;
   elapsedMs: number;
   url?: string;
+  tokenMode?: WsProbeRequest['tokenMode'];
   statusCode?: number;
   statusMessage?: string;
   headers?: Record<string, string>;
   acceptValid?: boolean;
   protocol?: string;
   sentFrame?: boolean;
+  firstMessage?: WsProbeMessage;
   messages?: WsProbeMessage[];
   close?: { code?: number; reason: string };
   body?: string;
@@ -131,15 +138,20 @@ function sanitizeProbeUrl(value: string, token?: string) {
   }
 }
 
-function normalizeProbeUrl(rawURL: string, tokenMode: WsProbeRequest['tokenMode'], token?: string) {
-  const target = new URL(rawURL);
-  if (target.protocol !== 'ws:' && target.protocol !== 'wss:') {
+function buildProbeTransport(rawURL: string, tokenMode: WsProbeRequest['tokenMode'], token?: string) {
+  const normalized = normalizeDesktopWsUrlInput(rawURL);
+  if (!normalized) {
     throw new Error('Only ws and wss targets are supported.');
   }
-  if (tokenMode === 'query' && token && !target.searchParams.has('token')) {
-    target.searchParams.set('token', token);
+  if (tokenMode === 'none') {
+    const target = new URL(normalized);
+    target.searchParams.delete('token');
+    return {
+      url: target.toString(),
+      protocols: undefined
+    };
   }
-  return target;
+  return buildDesktopTokenTransport(normalized, tokenMode || 'query', token || '');
 }
 
 function parseHeaders(lines: string[]) {
@@ -247,8 +259,9 @@ async function probeWebSocket(input: WsProbeRequest): Promise<WsProbeResult> {
   const startedAt = Date.now();
   const timeoutMs = Math.min(Math.max(input.timeoutMs || 9000, 1000), 30000);
   const token = input.token?.trim() || '';
-  const tokenMode = input.tokenMode || 'none';
-  const target = normalizeProbeUrl(input.url || '', tokenMode, token);
+  const tokenMode = input.tokenMode || 'query';
+  const transport = buildProbeTransport(input.url || '', tokenMode, token);
+  const target = new URL(transport.url);
   const expectedFrameId = readFrameMeta(input.frame).id;
   const safeURL = sanitizeProbeUrl(target.toString(), token);
   const key = randomBytes(16).toString('base64');
@@ -266,8 +279,8 @@ async function probeWebSocket(input: WsProbeRequest): Promise<WsProbeResult> {
     'User-Agent: Desktop-Request-Tester/0.1'
   ];
 
-  if (tokenMode === 'subprotocol' && token) {
-    headers.push(`Sec-WebSocket-Protocol: bearer.${token}`);
+  if (transport.protocols?.[0]) {
+    headers.push(`Sec-WebSocket-Protocol: ${transport.protocols[0]}`);
   }
 
   const requestText = `${headers.join('\r\n')}\r\n\r\n`;
@@ -280,6 +293,11 @@ async function probeWebSocket(input: WsProbeRequest): Promise<WsProbeResult> {
     let buffer = Buffer.alloc(0);
     let handshakeBody = Buffer.alloc(0);
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let handshakeStatusCode: number | undefined;
+    let handshakeStatusMessage: string | undefined;
+    let handshakeHeaders: Record<string, string> | undefined;
+    let handshakeAcceptValid: boolean | undefined;
+    let handshakeProtocol: string | undefined;
 
     const finish = (result: Omit<WsProbeResult, 'elapsedMs' | 'url' | 'opened'>) => {
       if (settled) {
@@ -298,6 +316,13 @@ async function probeWebSocket(input: WsProbeRequest): Promise<WsProbeResult> {
         opened,
         elapsedMs: Date.now() - startedAt,
         url: safeURL,
+        tokenMode,
+        statusCode: result.statusCode ?? handshakeStatusCode,
+        statusMessage: result.statusMessage ?? handshakeStatusMessage,
+        headers: result.headers ?? handshakeHeaders,
+        acceptValid: result.acceptValid ?? handshakeAcceptValid,
+        protocol: result.protocol ?? handshakeProtocol,
+        firstMessage: result.firstMessage ?? messages[0],
         messages
       });
     };
@@ -370,6 +395,9 @@ async function probeWebSocket(input: WsProbeRequest): Promise<WsProbeResult> {
       buffer = Buffer.from(buffer.subarray(headerEnd + 4));
       handshakeBody = Buffer.concat([handshakeBody, buffer]);
       headerParsed = true;
+      handshakeStatusCode = statusCode;
+      handshakeStatusMessage = statusMessage;
+      handshakeHeaders = responseHeaders;
 
       if (statusCode !== 101) {
         finish({
@@ -386,6 +414,8 @@ async function probeWebSocket(input: WsProbeRequest): Promise<WsProbeResult> {
       opened = true;
       const protocol = responseHeaders['sec-websocket-protocol'];
       const acceptValid = responseHeaders['sec-websocket-accept'] === expectedAccept;
+      handshakeProtocol = protocol;
+      handshakeAcceptValid = acceptValid;
       buffer = Buffer.from(handshakeBody);
       handshakeBody = Buffer.alloc(0);
       if (input.frame !== undefined && socket) {
