@@ -2,50 +2,112 @@
 
 本文件给后续在 `tunnel-hub-tester` 中工作的编码代理和开发者使用。请先读 `README.md`，再按本文件约定改动。
 
-## 项目结构
+## 1. 项目概览
 
-本仓库是 Tunnel Hub / Zenmind Desktop 的本地请求调试前端，技术栈为 React + Vite + TypeScript。
+`tunnel-hub-tester` 是 Tunnel Hub / Zenmind Desktop 的本地 WebSocket 协议调试前端。它用于连接本地 Desktop WS Server 或远程 `*.m.zenmind.cc` Desktop public WebSocket，并发送 `d`、`ap`、`wa` namespace 的业务 frame。
 
-- `src/App.tsx`: 主调试台 UI、WebSocket 连接、请求模板、日志、Tunnel Hub 管理辅助操作和 Desktop Bridge 调用。
-- `src/styles.css`: 全局样式和页面布局。
+本项目是调试工具，不是管理控制台；正式管理能力属于 sibling 项目 `tunnel-hub-website`。
+
+## 2. 技术栈
+
+- React + TypeScript。
+- Vite dev server、build 和 preview。
+- Node built-in `node --test` + `--experimental-strip-types`。
+- `lucide-react` 图标。
+- Vite 自定义 Node middleware，用于 HTTP proxy 和 WebSocket handshake probe。
+
+## 3. 架构设计
+
+应用由三层组成：
+
+1. `src/desktopWsProtocol.ts`: URL 规范化、Desktop token transport、business frame builder 等纯函数。
+2. `src/App.tsx`: 调试台 UI、WebSocket 生命周期、请求模板、日志脱敏、注册 helper、probe 调用和 localStorage 持久化。
+3. `vite.config.ts`: Vite 配置和 Node 侧调试中间件，包括 `/__tester_proxy` 与 `/__tester_ws_probe`。
+
+核心链路：
+
+- 本地模式连接 `ws://127.0.0.1:<port>/ws`。
+- 远程模式连接 `wss://<random>.m.zenmind.cc/ws`。
+- token 可以通过 query `?token=...` 或 WebSocket subprotocol `bearer.<token>` 发送。
+- `探测` 不依赖浏览器 WebSocket API，而是在 Vite Node middleware 中手写 handshake，方便查看 HTTP status、headers、body、close frame 和首条消息。
+
+## 4. 目录结构
+
+- `src/App.tsx`: 主调试台 UI、WebSocket 连接、业务请求、日志、注册 helper。
+- `src/desktopWsProtocol.ts`: 协议相关纯函数和类型。
+- `src/desktopWsProtocol.test.ts`: URL、token transport、frame builder 和功能边界测试。
+- `src/styles.css`: 全局样式和响应式布局。
 - `src/main.tsx`: React 挂载入口。
-- `vite.config.ts`: Vite 配置，并提供 `/__tester_ws_probe` Node 中间件用于服务端侧 WebSocket handshake 探测。
+- `vite.config.ts`: dev/preview 配置、Node proxy、WebSocket probe。
 - `package.json`: npm scripts 和依赖声明。
 
 相关 sibling 项目：
 
-- `/Users/linlay/Project/zenmind-tunnel-hub/tunnel-hub-server`: Tunnel Hub Relay/Admin/Agent Go 服务。
-- `/Users/linlay/Project/zenmind-tunnel-hub/tunnel-hub-website`: Tunnel Hub 管理前端。
-- `/Users/linlay/Project/zenmind-tunnel-hub/tunnel-hub-agent`: Tunnel Hub Agent。
+- `../tunnel-hub-server`: Tunnel Hub Relay/Admin/Desktop API/Agent Go 服务。
+- `../tunnel-hub-website`: Tunnel Hub 管理前端。
 
-## 常用命令
+## 5. 数据结构
+
+核心前端数据结构：
+
+- `DesktopBusinessFrame`: `{ ns, frame: "request", type, id, payload }`。
+- `Namespace`: `d`、`ap`、`wa`。
+- `DesktopTokenMode`: `query` 或 `subprotocol`。
+- tester settings: 目标模式、远程 host、token transport、Hub base URL、注册参数等，保存在 `localStorage`。
+- probe result: handshake/open/message/close/timeout/error 的分阶段结果，定义在 `vite.config.ts`。
+- 日志记录会对 token、authorization、api key、secret 等字段脱敏。
+
+## 6. API 与协议定义
+
+本地 Vite middleware：
+
+- `POST /__tester_proxy?url=...`: Node 侧 HTTP proxy helper，用于绕过浏览器 CORS 限制做调试请求。
+- `POST /__tester_ws_probe`: Node 侧 WebSocket handshake probe，支持发送首个 JSON frame 并读取响应。
+
+外部 API：
+
+- `POST /api/desktop/devices/register`: Desktop 注册 helper，要求 Official JWT。
+
+WebSocket 协议：
+
+- Desktop target path 固定为 `/ws`。
+- 远程 Desktop public Host 属于 `*.m.zenmind.cc`。
+- business frame 由 `buildDesktopBusinessFrame` 生成，`frame` 固定为 `request`。
+- tester 支持 `ns=d`、`ns=ap`、`ns=wa`，但不测试 browser-facing `*.wa.zenmind.cc` reverse proxy。
+
+## 7. 开发要点
+
+- 保持项目定位为调试工具，不扩展成正式管理后台。
+- 不要把真实 Desktop token、Official JWT、cookie secret 或 API key 写入源码、文档、测试或截图。
+- 涉及 token、Authorization、secret、API key 的日志必须脱敏。
+- `vite.config.ts` 在 Node 侧运行，不能使用浏览器 API。
+- WebSocket URL 规范化、token transport 和 frame builder 优先放在 `src/desktopWsProtocol.ts`，并补充 `desktopWsProtocol.test.ts`。
+- 现有测试明确禁止把本工具变成 `*.wa.zenmind.cc` WebApp reverse proxy tester；相关能力应放到专门工具或 server/website 侧。
+- UI 文案需要清楚区分 `agentToken` 和 Desktop/platform auth token。
+
+## 8. 开发流程
 
 ```bash
+cd tunnel-hub-tester
 npm install
-npm run dev
+npm test
 npm run build
-npm run preview
+npm run dev
 ```
 
-`dev` 和 `preview` 都监听 `127.0.0.1:11975`。
+本地交互验证：
 
-## 开发约定
+1. 启动 Zenmind Desktop WS Server。
+2. 打开 `http://127.0.0.1:11975`。
+3. 本地连接 `ws://127.0.0.1:7082/ws`。
+4. 远程连接 `wss://<random>.m.zenmind.cc/ws`。
+5. 分别验证 query token 和 subprotocol token mode。
 
-- 沿用现有 React/Vite/TypeScript/lucide-react，不引入新状态管理库或 UI 框架，除非需求明确。
-- 保持本项目是调试工具，不把它扩展成正式管理后台；管理后台能力应优先放在 sibling `tunnel-hub-website`。
-- 不要提交本地生成物：`node_modules/`、`dist/`、`*.tsbuildinfo`、`.env*`、`.DS_Store`、日志文件。
-- 不要在文档、源码或配置中写入真实 Desktop token、Official JWT、cookie secret 或其他凭据。
-- WebSocket frame、request type、payload 模板要以当前 Desktop 协议和 sibling server 代码为准；无法确认时在文档或注释中标记未知，不要编造协议细节。
-- 涉及公网 route、Admin API 或 token 传递模式的改动，需要同时检查 UI 展示、日志脱敏和错误提示是否仍然清晰。
-- `vite.config.ts` 中的 probe 逻辑运行在 Node 侧，改动时注意不要把浏览器 API 写进去。
+## 9. 已知约束与注意事项
 
-## 推荐验证
-
-按改动范围选择验证：
-
-- 前端 UI、类型、Vite 中间件：`npm run build`
-- 本地交互联调：`npm run dev`，打开 `http://127.0.0.1:11975`
-- Desktop WebSocket 排查相关改动：分别验证本地 `ws://127.0.0.1:7082/ws` 和远程 `wss://<random>.m.zenmind.cc/ws`
-- WebApp route 排查相关改动：验证公网 `https://<random>.wa.zenmind.cc/` 或 `wss://<random>.wa.zenmind.cc/ws` 能通过 Desktop tunnel 转发到注册的本机 `targetUrl`
-
-如果因为环境限制无法运行某项验证，请在最终说明里明确写出未运行的命令和原因。
+- `dev` 和 `preview` 都固定监听 `127.0.0.1:11975`。
+- `npm test` 使用 Node 原生 test runner，不是 Vitest。
+- 本项目没有生产 Dockerfile。
+- browser-facing WebApp 反向代理验证目标是 `https://<random>.wa.zenmind.cc/` 或 `wss://<random>.wa.zenmind.cc/ws`，不属于本 tester 当前职责。
+- 不提交 `node_modules/`、`dist/`、`*.tsbuildinfo`、`.env*`、`.DS_Store`、日志文件。
+- 如果环境限制导致无法运行验证命令，最终说明里必须明确列出未运行项和原因。
