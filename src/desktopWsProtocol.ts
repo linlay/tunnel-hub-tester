@@ -70,11 +70,22 @@ export function normalizeRemoteTargetInput(value: unknown, fallback = '') {
 }
 
 export function publicHostFromDesktopWsUrl(value: unknown) {
-  const normalized = normalizeDesktopWsUrlInput(value);
-  if (!normalized) {
-    return '';
-  }
-  return new URL(normalized).host;
+	const normalized = normalizeDesktopWsUrlInput(value);
+	if (!normalized) {
+		return '';
+	}
+	return new URL(normalized).host;
+}
+
+export function resolveUploadPublicHost(targetMode: TargetMode, remoteTarget: unknown, explicitPublicHost: unknown = '') {
+	const explicit = publicHostFromDesktopWsUrl(explicitPublicHost);
+	if (explicit) {
+		return explicit;
+	}
+	if (targetMode === 'remote') {
+		return publicHostFromDesktopWsUrl(remoteTarget);
+	}
+	return '';
 }
 
 export function deviceIdFromDesktopHost(value: unknown) {

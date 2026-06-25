@@ -109,6 +109,7 @@ pre {
 
 .topbar,
 .target-panel,
+.upload-panel,
 .workspace,
 .advanced-tools {
   width: min(1320px, 100%);
@@ -323,6 +324,15 @@ pre {
 
 .http-grid {
   grid-template-columns: 120px minmax(0, 1fr);
+}
+
+.upload-grid {
+  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) minmax(220px, 1.4fr) minmax(220px, 1.4fr);
+}
+
+.upload-url {
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
 }
 
 .button-row {
@@ -756,6 +766,8 @@ pre {
   .field-grid.two,
   .composer-grid,
   .http-grid,
+  .upload-grid,
+  .upload-url,
   .target-url {
     grid-template-columns: 1fr;
   }

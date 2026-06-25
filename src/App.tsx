@@ -12,11 +12,12 @@ import {
   Route,
   Send,
   Server,
-  ShieldCheck,
-  Trash2,
-  Unplug,
-  Wifi,
-  XCircle
+	ShieldCheck,
+	Trash2,
+	Unplug,
+	Upload,
+	Wifi,
+	XCircle
 } from 'lucide-react';
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -26,12 +27,13 @@ import {
   defaultLocalDesktopPort,
   desktopPublicBaseDomain,
   deviceIdFromDesktopHost,
-  normalizeDesktopWsUrlInput,
-  normalizePort,
-  publicHostFromDesktopWsUrl,
-  type DesktopTokenMode,
-  type Namespace,
-  type TargetMode
+	normalizeDesktopWsUrlInput,
+	normalizePort,
+	publicHostFromDesktopWsUrl,
+	resolveUploadPublicHost,
+	type DesktopTokenMode,
+	type Namespace,
+	type TargetMode
 } from './desktopWsProtocol';
 
 type WebSocketStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
@@ -47,10 +49,16 @@ type Settings = {
 };
 
 type Composer = {
-  ns: Namespace;
-  type: string;
-  id: string;
-  payload: string;
+	ns: Namespace;
+	type: string;
+	id: string;
+	payload: string;
+};
+
+type UploadDraft = {
+	chatId: string;
+	requestId: string;
+	publicHost: string;
 };
 
 type LogEntry = {
@@ -429,7 +437,7 @@ function shortTime() {
 }
 
 function statusLabel(status: WebSocketStatus) {
-  switch (status) {
+	switch (status) {
     case 'connecting':
       return 'Connecting';
     case 'open':
@@ -440,7 +448,24 @@ function statusLabel(status: WebSocketStatus) {
       return 'Error';
     default:
       return 'Idle';
-  }
+	}
+}
+
+function formatFileSize(size: number) {
+	if (!Number.isFinite(size) || size < 0) {
+		return '0 B';
+	}
+	if (size < 1024) {
+		return `${size} B`;
+	}
+	const units = ['KB', 'MB', 'GB'];
+	let value = size / 1024;
+	let unitIndex = 0;
+	while (value >= 1024 && unitIndex < units.length - 1) {
+		value /= 1024;
+		unitIndex += 1;
+	}
+	return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
 function isFrameLike(value: unknown): value is {
@@ -555,14 +580,20 @@ export function App() {
   const [busy, setBusy] = useState('');
   const [smokeRunning, setSmokeRunning] = useState(false);
   const [wsProbeRunning, setWsProbeRunning] = useState(false);
-  const [composer, setComposer] = useState<Composer>({
-    ns: 'd',
-    type: 'session.hello',
-    id: 'req_hello',
-    payload: '{}'
-  });
-  const [rawFrame, setRawFrame] = useState('');
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+	const [composer, setComposer] = useState<Composer>({
+		ns: 'd',
+		type: 'session.hello',
+		id: 'req_hello',
+		payload: '{}'
+	});
+	const [uploadDraft, setUploadDraft] = useState<UploadDraft>({
+		chatId: 'chat_upload',
+		requestId: '',
+		publicHost: ''
+	});
+	const [uploadFile, setUploadFile] = useState<File | null>(null);
+	const [rawFrame, setRawFrame] = useState('');
+	const [logs, setLogs] = useState<LogEntry[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRef = useRef(
@@ -595,9 +626,14 @@ export function App() {
       : null,
     [desktopToken, desktopWsBaseUrl, settings.tokenMode]
   );
-  const displayWsUrl = desktopTransport?.url || 'Configure a Desktop WS target';
-  const safeDisplayWsUrl = maskSensitiveText(displayWsUrl, [desktopToken]);
-  const requestTypeOptions = useMemo(() => {
+	const displayWsUrl = desktopTransport?.url || 'Configure a Desktop WS target';
+	const safeDisplayWsUrl = maskSensitiveText(displayWsUrl, [desktopToken]);
+	const uploadPublicHost = useMemo(
+		() => resolveUploadPublicHost(settings.targetMode, settings.remoteTarget, uploadDraft.publicHost),
+		[settings.remoteTarget, settings.targetMode, uploadDraft.publicHost]
+	);
+	const uploadEndpoint = `${hubOrigin}/api/upload`;
+	const requestTypeOptions = useMemo(() => {
     if (composer.ns === 'd') {
       return Array.from(new Set(remoteDesktopTypes.length > 0
         ? remoteDesktopTypes
@@ -926,7 +962,7 @@ export function App() {
     }
   }, [addLog, buildFrame, desktopToken, desktopWsBaseUrl, nextRequestId, settings.tokenMode]);
 
-  const registerDesktopDevice = useCallback(async (rotateToken = false) => {
+	const registerDesktopDevice = useCallback(async (rotateToken = false) => {
     if (!hubJwt.trim()) {
       addLog({ direction: 'system', title: 'Desktop registration skipped', status: 'Official JWT is required' });
       return;
@@ -969,7 +1005,53 @@ export function App() {
     } finally {
       setBusy('');
     }
-  }, [addLog, httpRequest, hubJwt, hubOrigin, patchSettings, settings.registrationDeviceId]);
+	}, [addLog, httpRequest, hubJwt, hubOrigin, patchSettings, settings.registrationDeviceId]);
+
+	const uploadAttachment = useCallback(async () => {
+		if (!desktopToken.trim()) {
+			addLog({ direction: 'system', title: 'Upload skipped', status: 'Desktop token is required' });
+			return;
+		}
+		if (!uploadDraft.chatId.trim()) {
+			addLog({ direction: 'system', title: 'Upload skipped', status: 'chatId is required' });
+			return;
+		}
+		if (!uploadPublicHost) {
+			addLog({ direction: 'system', title: 'Upload skipped', status: 'publicHost is required' });
+			return;
+		}
+		if (!uploadFile) {
+			addLog({ direction: 'system', title: 'Upload skipped', status: 'file is required' });
+			return;
+		}
+		setBusy('upload');
+		try {
+			const form = new FormData();
+			form.set('chatId', uploadDraft.chatId.trim());
+			if (uploadDraft.requestId.trim()) {
+				form.set('requestId', uploadDraft.requestId.trim());
+			}
+			form.set('publicHost', uploadPublicHost);
+			form.set('file', uploadFile);
+			const payload = await httpRequest(uploadEndpoint, {
+				method: 'POST',
+				headers: {
+					Authorization: `Bearer ${desktopToken.trim()}`
+				},
+				body: form
+			});
+			addLog({
+				direction: 'system',
+				title: 'Upload completed',
+				status: `${uploadFile.name} -> ${uploadDraft.chatId.trim()}`,
+				payload
+			});
+		} catch (error) {
+			addLog({ direction: 'system', title: 'Upload failed', status: asErrorMessage(error) });
+		} finally {
+			setBusy('');
+		}
+	}, [addLog, desktopToken, httpRequest, uploadDraft.chatId, uploadDraft.requestId, uploadEndpoint, uploadFile, uploadPublicHost]);
 
   const formatPayload = useCallback(() => {
     try {
@@ -989,11 +1071,17 @@ export function App() {
     [addLog]
   );
 
-  function updateInput<K extends keyof Settings>(key: K) {
+	function updateInput<K extends keyof Settings>(key: K) {
     return (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
       patchSettings({ [key]: event.target.value } as Partial<Settings>);
     };
-  }
+	}
+
+	function updateUploadInput<K extends keyof UploadDraft>(key: K) {
+		return (event: ChangeEvent<HTMLInputElement>) => {
+			setUploadDraft((current) => ({ ...current, [key]: event.target.value }));
+		};
+	}
 
   function updateRemoteTarget(event: ChangeEvent<HTMLInputElement>) {
     patchSettings({ remoteTarget: event.target.value });
@@ -1124,10 +1212,58 @@ export function App() {
             <Play size={16} />
             {smokeRunning ? '运行中' : '快速检查'}
           </button>
-        </div>
-      </section>
+				</div>
+			</section>
 
-      <div className="workspace">
+			<section className="panel upload-panel">
+				<div className="panel-heading">
+					<div>
+						<h2>附件上传</h2>
+						<span>POST /api/upload</span>
+					</div>
+					<Upload size={18} />
+				</div>
+
+				<div className="field-grid upload-grid">
+					<label>
+						Chat ID
+						<input value={uploadDraft.chatId} onChange={updateUploadInput('chatId')} placeholder="chat_xxx" />
+					</label>
+					<label>
+						Request ID
+						<input value={uploadDraft.requestId} onChange={updateUploadInput('requestId')} placeholder="optional" />
+					</label>
+					<label>
+						Public Host
+						<input
+							value={uploadDraft.publicHost}
+							onChange={updateUploadInput('publicHost')}
+							placeholder={settings.targetMode === 'remote' ? publicHostFromDesktopWsUrl(settings.remoteTarget) : `zmxxxx.${desktopPublicBaseDomain}`}
+						/>
+					</label>
+					<label>
+						File
+						<input type="file" onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)} />
+					</label>
+				</div>
+
+				<div className="url-box upload-url">
+					<span>Endpoint</span>
+					<code>{uploadEndpoint}</code>
+					<span>Host</span>
+					<code>{uploadPublicHost || 'manual publicHost required'}</code>
+				</div>
+
+				<div className="button-row wrap">
+					<button className="primary" type="button" onClick={() => void uploadAttachment()} disabled={busy === 'upload'}>
+						<Upload size={16} />
+						{busy === 'upload' ? '上传中' : '上传'}
+					</button>
+					{uploadFile ? <code>{uploadFile.name} · {formatFileSize(uploadFile.size)}</code> : null}
+				</div>
+			</section>
+
+			<div className="workspace">
         <section className="panel composer-panel">
           <div className="panel-heading">
             <div>

@@ -6,8 +6,9 @@ import {
   buildDesktopBusinessFrame,
   buildDesktopTokenTransport,
   buildLocalDesktopWsUrl,
-  normalizeDesktopWsUrlInput,
-  type Namespace
+	normalizeDesktopWsUrlInput,
+	resolveUploadPublicHost,
+	type Namespace
 } from './desktopWsProtocol.ts';
 
 test('bare remote host normalizes to wss host ws path', () => {
@@ -40,14 +41,20 @@ test('query token mode appends and replaces token', () => {
 });
 
 test('subprotocol mode sends bearer token and keeps URL tokenless', () => {
-  assert.deepEqual(
+	assert.deepEqual(
     buildDesktopTokenTransport('wss://zm2tjftlkpdi.m.zenmind.cc/ws?token=old', 'subprotocol', 'desktop-token'),
     {
       url: 'wss://zm2tjftlkpdi.m.zenmind.cc/ws',
       tokenMode: 'subprotocol',
       protocols: ['bearer.desktop-token']
     }
-  );
+	);
+});
+
+test('upload public host resolves from explicit or remote target only', () => {
+	assert.equal(resolveUploadPublicHost('remote', 'zm2tjftlkpdi.m.zenmind.cc'), 'zm2tjftlkpdi.m.zenmind.cc');
+	assert.equal(resolveUploadPublicHost('local', 'zm2tjftlkpdi.m.zenmind.cc'), '');
+	assert.equal(resolveUploadPublicHost('local', '', 'https://zmupload.m.zenmind.cc/ws'), 'zmupload.m.zenmind.cc');
 });
 
 test('business frame builder explicitly supports d ap wa namespaces', () => {
