@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Clipboard,
   Copy,
+  Download,
   Globe2,
   KeyRound,
   ListChecks,
@@ -12,12 +13,12 @@ import {
   Route,
   Send,
   Server,
-	ShieldCheck,
-	Trash2,
-	Unplug,
-	Upload,
-	Wifi,
-	XCircle
+  ShieldCheck,
+  Trash2,
+  Unplug,
+  Upload,
+  Wifi,
+  XCircle
 } from 'lucide-react';
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -27,13 +28,13 @@ import {
   defaultLocalDesktopPort,
   desktopPublicBaseDomain,
   deviceIdFromDesktopHost,
-	normalizeDesktopWsUrlInput,
-	normalizePort,
-	publicHostFromDesktopWsUrl,
-	resolveUploadPublicHost,
-	type DesktopTokenMode,
-	type Namespace,
-	type TargetMode
+  normalizeDesktopWsUrlInput,
+  normalizePort,
+  publicHostFromDesktopWsUrl,
+  resolveDesktopPublicHost,
+  type DesktopTokenMode,
+  type Namespace,
+  type TargetMode
 } from './desktopWsProtocol';
 
 type WebSocketStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
@@ -59,6 +60,11 @@ type UploadDraft = {
 	chatId: string;
 	requestId: string;
 	publicHost: string;
+};
+
+type DownloadDraft = UploadDraft & {
+	resourceId: string;
+	resourceUrl: string;
 };
 
 type LogEntry = {
@@ -284,7 +290,8 @@ const agentPlatformRequestTypes = [
   '/api/viewport',
   '/api/resource',
   '/api/upload',
-  '/api/pull'
+  '/api/pull',
+  '/api/download'
 ];
 
 const desktopWaRequestTypes = ['desktop-defined.wa.action'];
@@ -468,6 +475,42 @@ function formatFileSize(size: number) {
 	return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
+function fileNameFromContentDisposition(value: string | null) {
+	if (!value) {
+		return '';
+	}
+	const encoded = /filename\*=UTF-8''([^;]+)/iu.exec(value);
+	if (encoded?.[1]) {
+		try {
+			return decodeURIComponent(encoded[1].trim().replace(/^"|"$/gu, ''));
+		} catch {
+			return encoded[1].trim().replace(/^"|"$/gu, '');
+		}
+	}
+	const quoted = /filename="([^"]+)"/iu.exec(value);
+	if (quoted?.[1]) {
+		return quoted[1].trim();
+	}
+	const plain = /filename=([^;]+)/iu.exec(value);
+	return plain?.[1]?.trim().replace(/^"|"$/gu, '') || '';
+}
+
+function fallbackDownloadFileName(draft: DownloadDraft) {
+	const resourceId = draft.resourceId.trim();
+	if (resourceId) {
+		return `${resourceId}.bin`;
+	}
+	const resourceUrl = draft.resourceUrl.trim();
+	if (resourceUrl) {
+		const path = resourceUrl.split('?')[0] || '';
+		const lastSegment = path.split('/').filter(Boolean).pop();
+		if (lastSegment) {
+			return lastSegment;
+		}
+	}
+	return 'download.bin';
+}
+
 function isFrameLike(value: unknown): value is {
   ns?: string;
   frame?: string;
@@ -580,20 +623,27 @@ export function App() {
   const [busy, setBusy] = useState('');
   const [smokeRunning, setSmokeRunning] = useState(false);
   const [wsProbeRunning, setWsProbeRunning] = useState(false);
-	const [composer, setComposer] = useState<Composer>({
-		ns: 'd',
-		type: 'session.hello',
-		id: 'req_hello',
-		payload: '{}'
-	});
-	const [uploadDraft, setUploadDraft] = useState<UploadDraft>({
-		chatId: 'chat_upload',
-		requestId: '',
-		publicHost: ''
-	});
-	const [uploadFile, setUploadFile] = useState<File | null>(null);
-	const [rawFrame, setRawFrame] = useState('');
-	const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [composer, setComposer] = useState<Composer>({
+    ns: 'd',
+    type: 'session.hello',
+    id: 'req_hello',
+    payload: '{}'
+  });
+  const [uploadDraft, setUploadDraft] = useState<UploadDraft>({
+    chatId: 'chat_upload',
+    requestId: '',
+    publicHost: ''
+  });
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [downloadDraft, setDownloadDraft] = useState<DownloadDraft>({
+    chatId: 'chat_upload',
+    requestId: '',
+    publicHost: '',
+    resourceId: '',
+    resourceUrl: '/api/resource?file=chat_upload%2Fnote.txt'
+  });
+  const [rawFrame, setRawFrame] = useState('');
+  const [logs, setLogs] = useState<LogEntry[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRef = useRef(
@@ -626,14 +676,19 @@ export function App() {
       : null,
     [desktopToken, desktopWsBaseUrl, settings.tokenMode]
   );
-	const displayWsUrl = desktopTransport?.url || 'Configure a Desktop WS target';
-	const safeDisplayWsUrl = maskSensitiveText(displayWsUrl, [desktopToken]);
-	const uploadPublicHost = useMemo(
-		() => resolveUploadPublicHost(settings.targetMode, settings.remoteTarget, uploadDraft.publicHost),
-		[settings.remoteTarget, settings.targetMode, uploadDraft.publicHost]
-	);
-	const uploadEndpoint = `${hubOrigin}/api/upload`;
-	const requestTypeOptions = useMemo(() => {
+  const displayWsUrl = desktopTransport?.url || 'Configure a Desktop WS target';
+  const safeDisplayWsUrl = maskSensitiveText(displayWsUrl, [desktopToken]);
+  const uploadPublicHost = useMemo(
+    () => resolveDesktopPublicHost(settings.targetMode, settings.remoteTarget, uploadDraft.publicHost),
+    [settings.remoteTarget, settings.targetMode, uploadDraft.publicHost]
+  );
+  const downloadPublicHost = useMemo(
+    () => resolveDesktopPublicHost(settings.targetMode, settings.remoteTarget, downloadDraft.publicHost),
+    [downloadDraft.publicHost, settings.remoteTarget, settings.targetMode]
+  );
+  const uploadEndpoint = `${hubOrigin}/api/upload`;
+  const downloadEndpoint = `${hubOrigin}/api/download`;
+  const requestTypeOptions = useMemo(() => {
     if (composer.ns === 'd') {
       return Array.from(new Set(remoteDesktopTypes.length > 0
         ? remoteDesktopTypes
@@ -1005,53 +1060,136 @@ export function App() {
     } finally {
       setBusy('');
     }
-	}, [addLog, httpRequest, hubJwt, hubOrigin, patchSettings, settings.registrationDeviceId]);
+  }, [addLog, httpRequest, hubJwt, hubOrigin, patchSettings, settings.registrationDeviceId]);
 
-	const uploadAttachment = useCallback(async () => {
-		if (!desktopToken.trim()) {
-			addLog({ direction: 'system', title: 'Upload skipped', status: 'Desktop token is required' });
-			return;
-		}
-		if (!uploadDraft.chatId.trim()) {
-			addLog({ direction: 'system', title: 'Upload skipped', status: 'chatId is required' });
-			return;
-		}
-		if (!uploadPublicHost) {
-			addLog({ direction: 'system', title: 'Upload skipped', status: 'publicHost is required' });
-			return;
-		}
-		if (!uploadFile) {
-			addLog({ direction: 'system', title: 'Upload skipped', status: 'file is required' });
-			return;
-		}
-		setBusy('upload');
-		try {
-			const form = new FormData();
-			form.set('chatId', uploadDraft.chatId.trim());
-			if (uploadDraft.requestId.trim()) {
-				form.set('requestId', uploadDraft.requestId.trim());
-			}
-			form.set('publicHost', uploadPublicHost);
-			form.set('file', uploadFile);
-			const payload = await httpRequest(uploadEndpoint, {
-				method: 'POST',
-				headers: {
-					Authorization: `Bearer ${desktopToken.trim()}`
-				},
-				body: form
-			});
-			addLog({
-				direction: 'system',
-				title: 'Upload completed',
-				status: `${uploadFile.name} -> ${uploadDraft.chatId.trim()}`,
-				payload
-			});
-		} catch (error) {
-			addLog({ direction: 'system', title: 'Upload failed', status: asErrorMessage(error) });
-		} finally {
-			setBusy('');
-		}
-	}, [addLog, desktopToken, httpRequest, uploadDraft.chatId, uploadDraft.requestId, uploadEndpoint, uploadFile, uploadPublicHost]);
+  const uploadAttachment = useCallback(async () => {
+    if (!desktopToken.trim()) {
+      addLog({ direction: 'system', title: 'Upload skipped', status: 'Desktop token is required' });
+      return;
+    }
+    if (!uploadDraft.chatId.trim()) {
+      addLog({ direction: 'system', title: 'Upload skipped', status: 'chatId is required' });
+      return;
+    }
+    if (!uploadPublicHost) {
+      addLog({ direction: 'system', title: 'Upload skipped', status: 'publicHost is required' });
+      return;
+    }
+    if (!uploadFile) {
+      addLog({ direction: 'system', title: 'Upload skipped', status: 'file is required' });
+      return;
+    }
+    setBusy('upload');
+    try {
+      const form = new FormData();
+      form.set('chatId', uploadDraft.chatId.trim());
+      if (uploadDraft.requestId.trim()) {
+        form.set('requestId', uploadDraft.requestId.trim());
+      }
+      form.set('publicHost', uploadPublicHost);
+      form.set('file', uploadFile);
+      const payload = await httpRequest(uploadEndpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${desktopToken.trim()}`
+        },
+        body: form
+      });
+      addLog({
+        direction: 'system',
+        title: 'Upload completed',
+        status: `${uploadFile.name} -> ${uploadDraft.chatId.trim()}`,
+        payload
+      });
+    } catch (error) {
+      addLog({ direction: 'system', title: 'Upload failed', status: asErrorMessage(error) });
+    } finally {
+      setBusy('');
+    }
+  }, [addLog, desktopToken, httpRequest, uploadDraft.chatId, uploadDraft.requestId, uploadEndpoint, uploadFile, uploadPublicHost]);
+
+  const downloadAttachment = useCallback(async () => {
+    if (!desktopToken.trim()) {
+      addLog({ direction: 'system', title: 'Download skipped', status: 'Desktop token is required' });
+      return;
+    }
+    if (!downloadDraft.chatId.trim()) {
+      addLog({ direction: 'system', title: 'Download skipped', status: 'chatId is required' });
+      return;
+    }
+    if (!downloadPublicHost) {
+      addLog({ direction: 'system', title: 'Download skipped', status: 'publicHost is required' });
+      return;
+    }
+    if (!downloadDraft.resourceId.trim() && !downloadDraft.resourceUrl.trim()) {
+      addLog({ direction: 'system', title: 'Download skipped', status: 'resourceId or resourceUrl is required' });
+      return;
+    }
+    setBusy('download');
+    try {
+      const response = await fetch(`/__tester_proxy?url=${encodeURIComponent(downloadEndpoint)}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${desktopToken.trim()}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          chatId: downloadDraft.chatId.trim(),
+          ...(downloadDraft.requestId.trim() ? { requestId: downloadDraft.requestId.trim() } : {}),
+          publicHost: downloadPublicHost,
+          ...(downloadDraft.resourceId.trim() ? { resourceId: downloadDraft.resourceId.trim() } : {}),
+          ...(downloadDraft.resourceUrl.trim() ? { resourceUrl: downloadDraft.resourceUrl.trim() } : {})
+        })
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        let payload: unknown = text;
+        try {
+          payload = text ? JSON.parse(text) : null;
+        } catch {
+          payload = text;
+        }
+        addLog({
+          direction: 'http',
+          title: `POST ${downloadEndpoint}`,
+          status: `${response.status} ${response.statusText}`,
+          payload
+        });
+        throw new Error(typeof payload === 'string' ? payload : prettyJSON(payload));
+      }
+      const blob = await response.blob();
+      const fileName = fileNameFromContentDisposition(response.headers.get('Content-Disposition')) || fallbackDownloadFileName(downloadDraft);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = fileName;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      addLog({
+        direction: 'http',
+        title: `POST ${downloadEndpoint}`,
+        status: `${response.status} ${response.statusText}`,
+        payload: {
+          fileName,
+          sizeBytes: blob.size,
+          size: formatFileSize(blob.size),
+          mimeType: blob.type || response.headers.get('Content-Type') || '',
+          sha256: response.headers.get('X-Content-SHA256') || ''
+        }
+      });
+      addLog({
+        direction: 'system',
+        title: 'Download completed',
+        status: `${fileName} <- ${downloadDraft.chatId.trim()}`
+      });
+    } catch (error) {
+      addLog({ direction: 'system', title: 'Download failed', status: asErrorMessage(error) });
+    } finally {
+      setBusy('');
+    }
+  }, [addLog, desktopToken, downloadDraft, downloadEndpoint, downloadPublicHost]);
 
   const formatPayload = useCallback(() => {
     try {
@@ -1071,17 +1209,23 @@ export function App() {
     [addLog]
   );
 
-	function updateInput<K extends keyof Settings>(key: K) {
+  function updateInput<K extends keyof Settings>(key: K) {
     return (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
       patchSettings({ [key]: event.target.value } as Partial<Settings>);
     };
-	}
+  }
 
-	function updateUploadInput<K extends keyof UploadDraft>(key: K) {
-		return (event: ChangeEvent<HTMLInputElement>) => {
-			setUploadDraft((current) => ({ ...current, [key]: event.target.value }));
-		};
-	}
+  function updateUploadInput<K extends keyof UploadDraft>(key: K) {
+    return (event: ChangeEvent<HTMLInputElement>) => {
+      setUploadDraft((current) => ({ ...current, [key]: event.target.value }));
+    };
+  }
+
+  function updateDownloadInput<K extends keyof DownloadDraft>(key: K) {
+    return (event: ChangeEvent<HTMLInputElement>) => {
+      setDownloadDraft((current) => ({ ...current, [key]: event.target.value }));
+    };
+  }
 
   function updateRemoteTarget(event: ChangeEvent<HTMLInputElement>) {
     patchSettings({ remoteTarget: event.target.value });
@@ -1215,9 +1359,9 @@ export function App() {
 				</div>
 			</section>
 
-			<section className="panel upload-panel">
-				<div className="panel-heading">
-					<div>
+				<section className="panel upload-panel">
+					<div className="panel-heading">
+						<div>
 						<h2>附件上传</h2>
 						<span>POST /api/upload</span>
 					</div>
@@ -1259,11 +1403,63 @@ export function App() {
 						<Upload size={16} />
 						{busy === 'upload' ? '上传中' : '上传'}
 					</button>
-					{uploadFile ? <code>{uploadFile.name} · {formatFileSize(uploadFile.size)}</code> : null}
-				</div>
-			</section>
+						{uploadFile ? <code>{uploadFile.name} · {formatFileSize(uploadFile.size)}</code> : null}
+					</div>
+				</section>
 
-			<div className="workspace">
+				<section className="panel download-panel">
+					<div className="panel-heading">
+						<div>
+							<h2>附件下载</h2>
+							<span>POST /api/download</span>
+						</div>
+						<Download size={18} />
+					</div>
+
+					<div className="field-grid download-grid">
+						<label>
+							Chat ID
+							<input value={downloadDraft.chatId} onChange={updateDownloadInput('chatId')} placeholder="chat_xxx" />
+						</label>
+						<label>
+							Request ID
+							<input value={downloadDraft.requestId} onChange={updateDownloadInput('requestId')} placeholder="optional" />
+						</label>
+						<label>
+							Public Host
+							<input
+								value={downloadDraft.publicHost}
+								onChange={updateDownloadInput('publicHost')}
+								placeholder={settings.targetMode === 'remote' ? publicHostFromDesktopWsUrl(settings.remoteTarget) : `zmxxxx.${desktopPublicBaseDomain}`}
+							/>
+						</label>
+						<label>
+							Resource ID
+							<input value={downloadDraft.resourceId} onChange={updateDownloadInput('resourceId')} placeholder="r01" />
+						</label>
+						<label>
+							Resource URL
+							<input value={downloadDraft.resourceUrl} onChange={updateDownloadInput('resourceUrl')} placeholder="/api/resource?file=..." />
+						</label>
+					</div>
+
+					<div className="url-box download-url">
+						<span>Endpoint</span>
+						<code>{downloadEndpoint}</code>
+						<span>Host</span>
+						<code>{downloadPublicHost || 'manual publicHost required'}</code>
+					</div>
+
+					<div className="button-row wrap">
+						<button className="primary" type="button" onClick={() => void downloadAttachment()} disabled={busy === 'download'}>
+							<Download size={16} />
+							{busy === 'download' ? '下载中' : '下载'}
+						</button>
+						<code>{downloadDraft.resourceId.trim() || downloadDraft.resourceUrl.trim() || 'resource required'}</code>
+					</div>
+				</section>
+
+				<div className="workspace">
         <section className="panel composer-panel">
           <div className="panel-heading">
             <div>

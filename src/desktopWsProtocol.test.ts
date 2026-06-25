@@ -3,13 +3,14 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   applyDesktopTokenToUrl,
-  buildDesktopBusinessFrame,
-  buildDesktopTokenTransport,
-  buildLocalDesktopWsUrl,
-	normalizeDesktopWsUrlInput,
-	resolveUploadPublicHost,
-	type Namespace
-} from './desktopWsProtocol.ts';
+	  buildDesktopBusinessFrame,
+	  buildDesktopTokenTransport,
+	  buildLocalDesktopWsUrl,
+		normalizeDesktopWsUrlInput,
+		resolveDesktopPublicHost,
+		resolveUploadPublicHost,
+		type Namespace
+	} from './desktopWsProtocol.ts';
 
 test('bare remote host normalizes to wss host ws path', () => {
   assert.equal(
@@ -57,6 +58,12 @@ test('upload public host resolves from explicit or remote target only', () => {
 	assert.equal(resolveUploadPublicHost('local', '', 'https://zmupload.m.zenmind.cc/ws'), 'zmupload.m.zenmind.cc');
 });
 
+test('download public host uses shared desktop public host resolver', () => {
+	assert.equal(resolveDesktopPublicHost('remote', 'wss://zmdownload.m.zenmind.cc/ws'), 'zmdownload.m.zenmind.cc');
+	assert.equal(resolveDesktopPublicHost('local', 'wss://zmdownload.m.zenmind.cc/ws'), '');
+	assert.equal(resolveDesktopPublicHost('local', '', 'zmanual.m.zenmind.cc'), 'zmanual.m.zenmind.cc');
+});
+
 test('business frame builder explicitly supports d ap wa namespaces', () => {
   for (const ns of ['d', 'ap', 'wa'] satisfies Namespace[]) {
     assert.deepEqual(buildDesktopBusinessFrame(ns, ns === 'd' ? 'session.hello' : '/api/agents', {}, 'req_001'), {
@@ -70,9 +77,10 @@ test('business frame builder explicitly supports d ap wa namespaces', () => {
 });
 
 test('App does not expose WebApp reverse proxy primary flow', () => {
-  const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
-  assert.equal(app.includes('*.wa.zenmind.cc'), false);
-  assert.equal(app.includes('WebApp 探测'), false);
+	const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+	assert.equal(app.includes('POST /api/download'), true);
+	assert.equal(app.includes('*.wa.zenmind.cc'), false);
+	assert.equal(app.includes('WebApp 探测'), false);
   assert.equal(app.includes('Register WebApp'), false);
   assert.equal(app.includes('webapp-register'), false);
   assert.equal(app.includes('runWebAppWebSocketProbe'), false);

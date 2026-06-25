@@ -77,7 +77,7 @@ export function publicHostFromDesktopWsUrl(value: unknown) {
 	return new URL(normalized).host;
 }
 
-export function resolveUploadPublicHost(targetMode: TargetMode, remoteTarget: unknown, explicitPublicHost: unknown = '') {
+export function resolveDesktopPublicHost(targetMode: TargetMode, remoteTarget: unknown, explicitPublicHost: unknown = '') {
 	const explicit = publicHostFromDesktopWsUrl(explicitPublicHost);
 	if (explicit) {
 		return explicit;
@@ -87,6 +87,8 @@ export function resolveUploadPublicHost(targetMode: TargetMode, remoteTarget: un
 	}
 	return '';
 }
+
+export const resolveUploadPublicHost = resolveDesktopPublicHost;
 
 export function deviceIdFromDesktopHost(value: unknown) {
   if (typeof value !== 'string') {
