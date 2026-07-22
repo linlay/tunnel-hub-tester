@@ -10,6 +10,8 @@
 
 - 本地 Desktop WS Server: `ws://127.0.0.1:7082/ws`
 - 远程 Desktop WS Server: `wss://<random>.m.zenmind.cc/ws`
+- Desktop 附件上传: `POST https://<random>.m.zenmind.cc/api/upload`
+- Desktop 附件资源: `GET https://<random>.m.zenmind.cc/api/resource?file=...`
 - 本地 tester: `http://127.0.0.1:11975`
 - Tunnel Hub API: `https://tunnel-hub.zenmind.cc`
 
@@ -42,6 +44,7 @@ npm run dev
 5. 选择 token transport: query token 或 `bearer.<token>` WebSocket subprotocol。
 6. 需要排查握手、鉴权或公网路由时，先点击 `探测`，再点击 `连接`。
 7. 在请求调试区选择 `ns=d`、`ns=ap` 或 `ns=wa`，编辑 `type` 和 JSON payload 后发送。
+8. 附件面板从远程目标或手动填写的 Desktop public Host 构造请求 URL；Host 已经确定目标 Desktop，不会再向请求 body 写入 `publicHost`。
 
 `ns=wa` 在本工具里表示 Desktop WS Server 的业务 namespace，不是 `*.wa.zenmind.cc` WebApp 反向代理入口。
 
@@ -87,6 +90,7 @@ npm run build
 
 - 浏览器控制台用于查看前端运行错误。
 - 页面请求日志用于查看 Desktop business frame、probe、Tunnel Hub registration helper 和错误响应。
+- 附件上传与资源下载都携带 Desktop/platform bearer token，并只请求具体 Desktop 的 `*.m.zenmind.cc` Host。
 - `探测` 会通过 Vite Node 中间件执行 WebSocket handshake，可区分浏览器泛化错误、Relay HTTP status/body、鉴权失败、close frame 和首条 Desktop 响应。
 - Query token mode 会发送 `?token=<DesktopToken>`。
 - Subprotocol mode 会发送 `Sec-WebSocket-Protocol: bearer.<DesktopToken>`。
@@ -97,6 +101,7 @@ npm run build
 - 远程 Desktop 返回 `502 desktop is offline`：确认 Desktop 已使用注册返回的内部 `agentToken` 连接到 Tunnel Hub Relay。
 - 鉴权失败：确认 Desktop/platform auth token 有效，并检查 token transport 是 query token 还是 `bearer.<token>` subprotocol。
 - 注册 helper 返回 401/403：确认 Official JWT 有效且 `scope` 包含 `tunnel`。
+- 附件请求 404：确认 URL 使用具体 Desktop public Host；主站 `tunnel-hub.zenmind.cc` 不提供附件业务 API。
 - `ns=wa` 没有返回：确认目标 Desktop WS Server 已定义对应 `wa` action；本 tester 不测试 WebApp reverse proxy。
 
 ## 6. 开发命令

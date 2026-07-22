@@ -90,6 +90,49 @@ export function resolveDesktopPublicHost(targetMode: TargetMode, remoteTarget: u
 
 export const resolveUploadPublicHost = resolveDesktopPublicHost;
 
+export function desktopHttpOrigin(publicHost: unknown) {
+	const host = publicHostFromDesktopWsUrl(publicHost);
+	if (!host) {
+		return '';
+	}
+	const url = new URL(`https://${host}`);
+	if (!url.hostname.toLowerCase().endsWith(`.${desktopPublicBaseDomain}`)) {
+		return '';
+	}
+	return url.origin;
+}
+
+export function buildDesktopUploadEndpoint(publicHost: unknown) {
+	const origin = desktopHttpOrigin(publicHost);
+	return origin ? `${origin}/api/upload` : '';
+}
+
+export function buildDesktopResourceEndpoint(publicHost: unknown, resourceUrlOrFile: unknown) {
+	const origin = desktopHttpOrigin(publicHost);
+	if (!origin || typeof resourceUrlOrFile !== 'string') {
+		return '';
+	}
+	const value = resourceUrlOrFile.trim();
+	if (!value || value.startsWith('//') || /^[a-z][a-z\d+.-]*:/iu.test(value)) {
+		return '';
+	}
+	const endpoint = new URL('/api/resource', origin);
+	if (value.startsWith('/')) {
+		const resource = new URL(value, origin);
+		if (resource.origin !== origin || resource.pathname !== '/api/resource' || resource.hash) {
+			return '';
+		}
+		const files = resource.searchParams.getAll('file');
+		if (files.length !== 1 || !files[0]?.trim()) {
+			return '';
+		}
+		endpoint.searchParams.set('file', files[0]);
+		return endpoint.toString();
+	}
+	endpoint.searchParams.set('file', value);
+	return endpoint.toString();
+}
+
 export function deviceIdFromDesktopHost(value: unknown) {
   if (typeof value !== 'string') {
     return '';

@@ -23,7 +23,9 @@ import {
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildDesktopBusinessFrame,
+  buildDesktopResourceEndpoint,
   buildDesktopTokenTransport,
+  buildDesktopUploadEndpoint,
   buildLocalDesktopWsUrl,
   defaultLocalDesktopPort,
   desktopPublicBaseDomain,
@@ -62,8 +64,8 @@ type UploadDraft = {
 	publicHost: string;
 };
 
-type DownloadDraft = UploadDraft & {
-	resourceId: string;
+type ResourceDraft = {
+	publicHost: string;
 	resourceUrl: string;
 };
 
@@ -289,9 +291,7 @@ const agentPlatformRequestTypes = [
   '/api/memory/record/detail',
   '/api/viewport',
   '/api/resource',
-  '/api/upload',
-  '/api/pull',
-  '/api/download'
+  '/api/upload'
 ];
 
 const desktopWaRequestTypes = ['desktop-defined.wa.action'];
@@ -495,15 +495,14 @@ function fileNameFromContentDisposition(value: string | null) {
 	return plain?.[1]?.trim().replace(/^"|"$/gu, '') || '';
 }
 
-function fallbackDownloadFileName(draft: DownloadDraft) {
-	const resourceId = draft.resourceId.trim();
-	if (resourceId) {
-		return `${resourceId}.bin`;
-	}
+function fallbackDownloadFileName(draft: ResourceDraft) {
 	const resourceUrl = draft.resourceUrl.trim();
 	if (resourceUrl) {
-		const path = resourceUrl.split('?')[0] || '';
-		const lastSegment = path.split('/').filter(Boolean).pop();
+		const parsed = new URL(resourceUrl, 'https://desktop.invalid');
+		const file = parsed.pathname === '/api/resource'
+			? parsed.searchParams.get('file') || ''
+			: resourceUrl;
+		const lastSegment = file.split('/').filter(Boolean).pop();
 		if (lastSegment) {
 			return lastSegment;
 		}
@@ -635,11 +634,8 @@ export function App() {
     publicHost: ''
   });
   const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [downloadDraft, setDownloadDraft] = useState<DownloadDraft>({
-    chatId: 'chat_upload',
-    requestId: '',
+  const [resourceDraft, setResourceDraft] = useState<ResourceDraft>({
     publicHost: '',
-    resourceId: '',
     resourceUrl: '/api/resource?file=chat_upload%2Fnote.txt'
   });
   const [rawFrame, setRawFrame] = useState('');
@@ -682,12 +678,12 @@ export function App() {
     () => resolveDesktopPublicHost(settings.targetMode, settings.remoteTarget, uploadDraft.publicHost),
     [settings.remoteTarget, settings.targetMode, uploadDraft.publicHost]
   );
-  const downloadPublicHost = useMemo(
-    () => resolveDesktopPublicHost(settings.targetMode, settings.remoteTarget, downloadDraft.publicHost),
-    [downloadDraft.publicHost, settings.remoteTarget, settings.targetMode]
+  const resourcePublicHost = useMemo(
+    () => resolveDesktopPublicHost(settings.targetMode, settings.remoteTarget, resourceDraft.publicHost),
+    [resourceDraft.publicHost, settings.remoteTarget, settings.targetMode]
   );
-  const uploadEndpoint = `${hubOrigin}/api/upload`;
-  const downloadEndpoint = `${hubOrigin}/api/download`;
+  const uploadEndpoint = buildDesktopUploadEndpoint(uploadPublicHost);
+  const resourceEndpoint = buildDesktopResourceEndpoint(resourcePublicHost, resourceDraft.resourceUrl);
   const requestTypeOptions = useMemo(() => {
     if (composer.ns === 'd') {
       return Array.from(new Set(remoteDesktopTypes.length > 0
@@ -1071,8 +1067,8 @@ export function App() {
       addLog({ direction: 'system', title: 'Upload skipped', status: 'chatId is required' });
       return;
     }
-    if (!uploadPublicHost) {
-      addLog({ direction: 'system', title: 'Upload skipped', status: 'publicHost is required' });
+    if (!uploadEndpoint) {
+      addLog({ direction: 'system', title: 'Upload skipped', status: 'Desktop public Host is required' });
       return;
     }
     if (!uploadFile) {
@@ -1086,7 +1082,6 @@ export function App() {
       if (uploadDraft.requestId.trim()) {
         form.set('requestId', uploadDraft.requestId.trim());
       }
-      form.set('publicHost', uploadPublicHost);
       form.set('file', uploadFile);
       const payload = await httpRequest(uploadEndpoint, {
         method: 'POST',
@@ -1106,40 +1101,28 @@ export function App() {
     } finally {
       setBusy('');
     }
-  }, [addLog, desktopToken, httpRequest, uploadDraft.chatId, uploadDraft.requestId, uploadEndpoint, uploadFile, uploadPublicHost]);
+  }, [addLog, desktopToken, httpRequest, uploadDraft.chatId, uploadDraft.requestId, uploadEndpoint, uploadFile]);
 
   const downloadAttachment = useCallback(async () => {
     if (!desktopToken.trim()) {
       addLog({ direction: 'system', title: 'Download skipped', status: 'Desktop token is required' });
       return;
     }
-    if (!downloadDraft.chatId.trim()) {
-      addLog({ direction: 'system', title: 'Download skipped', status: 'chatId is required' });
+    if (!resourcePublicHost) {
+      addLog({ direction: 'system', title: 'Download skipped', status: 'Desktop public Host is required' });
       return;
     }
-    if (!downloadPublicHost) {
-      addLog({ direction: 'system', title: 'Download skipped', status: 'publicHost is required' });
-      return;
-    }
-    if (!downloadDraft.resourceId.trim() && !downloadDraft.resourceUrl.trim()) {
-      addLog({ direction: 'system', title: 'Download skipped', status: 'resourceId or resourceUrl is required' });
+    if (!resourceEndpoint) {
+      addLog({ direction: 'system', title: 'Download skipped', status: 'A valid /api/resource URL or file path is required' });
       return;
     }
     setBusy('download');
     try {
-      const response = await fetch(`/__tester_proxy?url=${encodeURIComponent(downloadEndpoint)}`, {
-        method: 'POST',
+      const response = await fetch(`/__tester_proxy?url=${encodeURIComponent(resourceEndpoint)}`, {
+        method: 'GET',
         headers: {
-          Authorization: `Bearer ${desktopToken.trim()}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          chatId: downloadDraft.chatId.trim(),
-          ...(downloadDraft.requestId.trim() ? { requestId: downloadDraft.requestId.trim() } : {}),
-          publicHost: downloadPublicHost,
-          ...(downloadDraft.resourceId.trim() ? { resourceId: downloadDraft.resourceId.trim() } : {}),
-          ...(downloadDraft.resourceUrl.trim() ? { resourceUrl: downloadDraft.resourceUrl.trim() } : {})
-        })
+          Authorization: `Bearer ${desktopToken.trim()}`
+        }
       });
       if (!response.ok) {
         const text = await response.text();
@@ -1151,14 +1134,14 @@ export function App() {
         }
         addLog({
           direction: 'http',
-          title: `POST ${downloadEndpoint}`,
+          title: `GET ${resourceEndpoint}`,
           status: `${response.status} ${response.statusText}`,
           payload
         });
         throw new Error(typeof payload === 'string' ? payload : prettyJSON(payload));
       }
       const blob = await response.blob();
-      const fileName = fileNameFromContentDisposition(response.headers.get('Content-Disposition')) || fallbackDownloadFileName(downloadDraft);
+      const fileName = fileNameFromContentDisposition(response.headers.get('Content-Disposition')) || fallbackDownloadFileName(resourceDraft);
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = objectUrl;
@@ -1169,7 +1152,7 @@ export function App() {
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
       addLog({
         direction: 'http',
-        title: `POST ${downloadEndpoint}`,
+        title: `GET ${resourceEndpoint}`,
         status: `${response.status} ${response.statusText}`,
         payload: {
           fileName,
@@ -1182,14 +1165,14 @@ export function App() {
       addLog({
         direction: 'system',
         title: 'Download completed',
-        status: `${fileName} <- ${downloadDraft.chatId.trim()}`
+        status: `${fileName} <- ${resourceDraft.resourceUrl.trim()}`
       });
     } catch (error) {
       addLog({ direction: 'system', title: 'Download failed', status: asErrorMessage(error) });
     } finally {
       setBusy('');
     }
-  }, [addLog, desktopToken, downloadDraft, downloadEndpoint, downloadPublicHost]);
+  }, [addLog, desktopToken, resourceDraft, resourceEndpoint, resourcePublicHost]);
 
   const formatPayload = useCallback(() => {
     try {
@@ -1221,9 +1204,9 @@ export function App() {
     };
   }
 
-  function updateDownloadInput<K extends keyof DownloadDraft>(key: K) {
+  function updateResourceInput<K extends keyof ResourceDraft>(key: K) {
     return (event: ChangeEvent<HTMLInputElement>) => {
-      setDownloadDraft((current) => ({ ...current, [key]: event.target.value }));
+      setResourceDraft((current) => ({ ...current, [key]: event.target.value }));
     };
   }
 
@@ -1378,7 +1361,7 @@ export function App() {
 						<input value={uploadDraft.requestId} onChange={updateUploadInput('requestId')} placeholder="optional" />
 					</label>
 					<label>
-						Public Host
+					Desktop Public Host
 						<input
 							value={uploadDraft.publicHost}
 							onChange={updateUploadInput('publicHost')}
@@ -1393,9 +1376,9 @@ export function App() {
 
 				<div className="url-box upload-url">
 					<span>Endpoint</span>
-					<code>{uploadEndpoint}</code>
+					<code>{uploadEndpoint || 'Desktop public Host required'}</code>
 					<span>Host</span>
-					<code>{uploadPublicHost || 'manual publicHost required'}</code>
+					<code>{uploadPublicHost || 'Desktop public Host required'}</code>
 				</div>
 
 				<div className="button-row wrap">
@@ -1411,43 +1394,31 @@ export function App() {
 					<div className="panel-heading">
 						<div>
 							<h2>附件下载</h2>
-							<span>POST /api/download</span>
+							<span>GET /api/resource</span>
 						</div>
 						<Download size={18} />
 					</div>
 
 					<div className="field-grid download-grid">
 						<label>
-							Chat ID
-							<input value={downloadDraft.chatId} onChange={updateDownloadInput('chatId')} placeholder="chat_xxx" />
-						</label>
-						<label>
-							Request ID
-							<input value={downloadDraft.requestId} onChange={updateDownloadInput('requestId')} placeholder="optional" />
-						</label>
-						<label>
-							Public Host
+							Desktop Public Host
 							<input
-								value={downloadDraft.publicHost}
-								onChange={updateDownloadInput('publicHost')}
+								value={resourceDraft.publicHost}
+								onChange={updateResourceInput('publicHost')}
 								placeholder={settings.targetMode === 'remote' ? publicHostFromDesktopWsUrl(settings.remoteTarget) : `zmxxxx.${desktopPublicBaseDomain}`}
 							/>
 						</label>
 						<label>
-							Resource ID
-							<input value={downloadDraft.resourceId} onChange={updateDownloadInput('resourceId')} placeholder="r01" />
-						</label>
-						<label>
-							Resource URL
-							<input value={downloadDraft.resourceUrl} onChange={updateDownloadInput('resourceUrl')} placeholder="/api/resource?file=..." />
+							Resource URL / file
+							<input value={resourceDraft.resourceUrl} onChange={updateResourceInput('resourceUrl')} placeholder="/api/resource?file=... or chat_xxx/file" />
 						</label>
 					</div>
 
 					<div className="url-box download-url">
 						<span>Endpoint</span>
-						<code>{downloadEndpoint}</code>
+						<code>{resourceEndpoint || 'Valid Desktop Host and resource required'}</code>
 						<span>Host</span>
-						<code>{downloadPublicHost || 'manual publicHost required'}</code>
+						<code>{resourcePublicHost || 'Desktop public Host required'}</code>
 					</div>
 
 					<div className="button-row wrap">
@@ -1455,7 +1426,7 @@ export function App() {
 							<Download size={16} />
 							{busy === 'download' ? '下载中' : '下载'}
 						</button>
-						<code>{downloadDraft.resourceId.trim() || downloadDraft.resourceUrl.trim() || 'resource required'}</code>
+						<code>{resourceDraft.resourceUrl.trim() || 'resource required'}</code>
 					</div>
 				</section>
 

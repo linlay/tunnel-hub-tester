@@ -67,6 +67,8 @@
 外部 API：
 
 - `POST /api/desktop/devices/register`: Desktop 注册 helper，要求 Official JWT。
+- `POST https://<desktop>.m.zenmind.cc/api/upload`: 附件上传，目标 Desktop 只由 URL Host 确定，multipart 不发送 `publicHost`。
+- `GET https://<desktop>.m.zenmind.cc/api/resource?file=<chat-relative-path>`: 附件资源下载。
 
 WebSocket 协议：
 
@@ -84,6 +86,7 @@ WebSocket 协议：
 - WebSocket URL 规范化、token transport 和 frame builder 优先放在 `src/desktopWsProtocol.ts`，并补充 `desktopWsProtocol.test.ts`。
 - 现有测试明确禁止把本工具变成 `*.wa.zenmind.cc` WebApp reverse proxy tester；相关能力应放到专门工具或 server/website 侧。
 - UI 文案需要清楚区分 `agentToken` 和 Desktop/platform auth token。
+- 附件 endpoint 必须由具体 Desktop public Host 构造；不得回退到 Tunnel Hub 主域，也不得把 `ns=ap` 映射成 `/ap` URL 前缀。
 
 ## 8. 开发流程
 

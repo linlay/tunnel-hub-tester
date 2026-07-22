@@ -3,14 +3,16 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   applyDesktopTokenToUrl,
-	  buildDesktopBusinessFrame,
-	  buildDesktopTokenTransport,
-	  buildLocalDesktopWsUrl,
-		normalizeDesktopWsUrlInput,
-		resolveDesktopPublicHost,
-		resolveUploadPublicHost,
-		type Namespace
-	} from './desktopWsProtocol.ts';
+	buildDesktopBusinessFrame,
+	buildDesktopResourceEndpoint,
+	buildDesktopTokenTransport,
+	buildDesktopUploadEndpoint,
+	buildLocalDesktopWsUrl,
+	normalizeDesktopWsUrlInput,
+	resolveDesktopPublicHost,
+	resolveUploadPublicHost,
+	type Namespace
+} from './desktopWsProtocol.ts';
 
 test('bare remote host normalizes to wss host ws path', () => {
   assert.equal(
@@ -64,6 +66,23 @@ test('download public host uses shared desktop public host resolver', () => {
 	assert.equal(resolveDesktopPublicHost('local', '', 'zmanual.m.zenmind.cc'), 'zmanual.m.zenmind.cc');
 });
 
+test('attachment endpoints are built from the target Desktop public Host', () => {
+	assert.equal(
+		buildDesktopUploadEndpoint('wss://zmfiles.m.zenmind.cc/ws'),
+		'https://zmfiles.m.zenmind.cc/api/upload'
+	);
+	assert.equal(
+		buildDesktopResourceEndpoint('zmfiles.m.zenmind.cc', '/api/resource?file=chat_1%2Fnote.txt'),
+		'https://zmfiles.m.zenmind.cc/api/resource?file=chat_1%2Fnote.txt'
+	);
+	assert.equal(
+		buildDesktopResourceEndpoint('zmfiles.m.zenmind.cc', 'chat_1/note.txt'),
+		'https://zmfiles.m.zenmind.cc/api/resource?file=chat_1%2Fnote.txt'
+	);
+	assert.equal(buildDesktopUploadEndpoint('tunnel-hub.zenmind.cc'), '');
+	assert.equal(buildDesktopResourceEndpoint('zmfiles.m.zenmind.cc', 'https://example.com/file'), '');
+});
+
 test('business frame builder explicitly supports d ap wa namespaces', () => {
   for (const ns of ['d', 'ap', 'wa'] satisfies Namespace[]) {
     assert.deepEqual(buildDesktopBusinessFrame(ns, ns === 'd' ? 'session.hello' : '/api/agents', {}, 'req_001'), {
@@ -78,7 +97,11 @@ test('business frame builder explicitly supports d ap wa namespaces', () => {
 
 test('App does not expose WebApp reverse proxy primary flow', () => {
 	const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
-	assert.equal(app.includes('POST /api/download'), true);
+	const removedDownloadPath = ['/api', 'download'].join('/');
+	const removedPublicHostFieldWrite = ["form.set('", "publicHost'"].join('');
+	assert.equal(app.includes('GET /api/resource'), true);
+	assert.equal(app.includes(`POST ${removedDownloadPath}`), false);
+	assert.equal(app.includes(removedPublicHostFieldWrite), false);
 	assert.equal(app.includes('*.wa.zenmind.cc'), false);
 	assert.equal(app.includes('WebApp 探测'), false);
   assert.equal(app.includes('Register WebApp'), false);
