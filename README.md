@@ -52,7 +52,7 @@ npm run dev
 
 高级工具中有 `POST /api/desktop/devices/register` helper。注册成功后，tester 会用返回的 `webSocketUrl` 填充远程 Desktop WS target。
 
-注册返回的 `agentToken` 是 Desktop 连接 Tunnel Hub Relay 的内部 token，不是 Desktop/platform auth token。不要把它填到主连接区的 Desktop token。
+注册响应不返回 Desktop tunnel secret。正式 Desktop 由 Main 使用同一 Official SSO JWT 完成注册，并在 Relay `/tunnel` 的首个 `tunnel.open` 帧中证明身份；tester 主连接区填写的仍是 Desktop/platform auth token，两者不是同一协议面。
 
 ### 构建与预览
 
@@ -98,7 +98,7 @@ npm run build
 ### 常见问题
 
 - 无法连接本地 Desktop：确认 `127.0.0.1:7082` 的 Desktop WS Server 已启动。
-- 远程 Desktop 返回 `502 desktop is offline`：确认 Desktop 已使用注册返回的内部 `agentToken` 连接到 Tunnel Hub Relay。
+- 远程 Desktop 返回 `502 desktop is offline`：确认 Desktop 已登录，且已使用有效 Official SSO JWT 连接到 Tunnel Hub Relay。
 - 鉴权失败：确认 Desktop/platform auth token 有效，并检查 token transport 是 query token 还是 `bearer.<token>` subprotocol。
 - 注册 helper 返回 401/403：确认 Official JWT 有效且 `scope` 包含 `tunnel`。
 - 附件请求 404：确认 URL 使用具体 Desktop public Host；主站 `tunnel-hub.zenmind.cc` 不提供附件业务 API。

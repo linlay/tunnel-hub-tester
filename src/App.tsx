@@ -87,9 +87,7 @@ type DesktopRegisterResponse = {
   relayUrl: string;
   targetUrl: string;
   tokenId: string;
-  agentToken?: string;
   created: boolean;
-  rotated: boolean;
 };
 
 type Template = {
@@ -1013,7 +1011,7 @@ export function App() {
     }
   }, [addLog, buildFrame, desktopToken, desktopWsBaseUrl, nextRequestId, settings.tokenMode]);
 
-	const registerDesktopDevice = useCallback(async (rotateToken = false) => {
+	const registerDesktopDevice = useCallback(async () => {
     if (!hubJwt.trim()) {
       addLog({ direction: 'system', title: 'Desktop registration skipped', status: 'Official JWT is required' });
       return;
@@ -1023,7 +1021,7 @@ export function App() {
       addLog({ direction: 'system', title: 'Desktop registration skipped', status: 'Registration device ID is required' });
       return;
     }
-    setBusy(rotateToken ? 'desktop-register-rotate' : 'desktop-register');
+    setBusy('desktop-register');
     try {
       const payload = await httpRequest(`${hubOrigin}/api/desktop/devices/register`, {
         method: 'POST',
@@ -1031,10 +1029,7 @@ export function App() {
           Authorization: `Bearer ${hubJwt.trim()}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          deviceId,
-          rotateToken
-        })
+        body: JSON.stringify({ deviceId })
       });
       const response = payload as DesktopRegisterResponse;
       const nextRemoteTarget = normalizeDesktopWsUrlInput(response.webSocketUrl || response.publicHost);
@@ -1047,7 +1042,7 @@ export function App() {
       }
       addLog({
         direction: 'system',
-        title: response.rotated ? 'Desktop registration rotated' : 'Desktop registered',
+        title: 'Desktop registered',
         status: response.webSocketUrl || response.publicHost || response.deviceId,
         payload: response
       });
@@ -1629,13 +1624,9 @@ export function App() {
               </label>
             </div>
             <div className="button-row wrap">
-              <button className="primary" type="button" onClick={() => void registerDesktopDevice(false)} disabled={busy === 'desktop-register'}>
+              <button className="primary" type="button" onClick={() => void registerDesktopDevice()} disabled={busy === 'desktop-register'}>
                 <CheckCircle2 size={16} />
                 Register Desktop
-              </button>
-              <button className="secondary" type="button" onClick={() => void registerDesktopDevice(true)} disabled={busy === 'desktop-register-rotate'}>
-                <RefreshCcw size={16} />
-                Rotate Register
               </button>
             </div>
           </section>

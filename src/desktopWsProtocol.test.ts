@@ -106,6 +106,9 @@ test('App does not expose WebApp reverse proxy primary flow', () => {
 	assert.equal(app.includes('WebApp 探测'), false);
   assert.equal(app.includes('Register WebApp'), false);
   assert.equal(app.includes('webapp-register'), false);
+  assert.equal(app.includes('agentToken'), false);
+  assert.equal(app.includes('rotateToken'), false);
+  assert.equal(app.includes('desktop-register-rotate'), false);
   assert.equal(app.includes('runWebAppWebSocketProbe'), false);
   assert.equal(app.includes('sendHttpProbe'), false);
   assert.equal(app.includes('value="app"'), false);

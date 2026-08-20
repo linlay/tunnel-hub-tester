@@ -85,7 +85,7 @@ WebSocket 协议：
 - `vite.config.ts` 在 Node 侧运行，不能使用浏览器 API。
 - WebSocket URL 规范化、token transport 和 frame builder 优先放在 `src/desktopWsProtocol.ts`，并补充 `desktopWsProtocol.test.ts`。
 - 现有测试明确禁止把本工具变成 `*.wa.zenmind.cc` WebApp reverse proxy tester；相关能力应放到专门工具或 server/website 侧。
-- UI 文案需要清楚区分 `agentToken` 和 Desktop/platform auth token。
+- UI 文案需要清楚区分 Tunnel Hub 使用的 Official SSO JWT 和 Desktop/platform auth token；注册 API 不签发 Desktop tunnel secret。
 - 附件 endpoint 必须由具体 Desktop public Host 构造；不得回退到 Tunnel Hub 主域，也不得把 `ns=ap` 映射成 `/ap` URL 前缀。
 
 ## 8. 开发流程
